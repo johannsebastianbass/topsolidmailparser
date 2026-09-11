@@ -1,0 +1,89 @@
+# TopSolid Mail Parser
+
+Recebe o webhook de atividade do Bitrix24, identifica de qual formulário do site
+veio o e-mail, extrai os campos do corpo HTML e atualiza o lead correspondente.
+
+## Como rodar
+
+```bash
+npm install
+npm start        # produção
+npm run dev      # nodemon
+npm test         # testes do parser (não acessa o Bitrix)
+```
+
+## Configuração
+
+No servidor, só o arquivo `.env` (que não vai para o git) com **duas linhas**:
+
+```
+BITRIX_WEBHOOK=https://crm.topsolidbrazil.com/rest/1/SEU_TOKEN
+BITRIX_APPLICATION_TOKEN=
+```
+
+Há um `.env.example` pronto para copiar. Todo o resto já vem com valor no
+código (`src/config.js`) e só precisa entrar no `.env` para sobrescrever:
+
+| Variável | Padrão | Para que serve |
+| --- | --- | --- |
+| `BITRIX_WEBHOOK` | — (**obrigatória**) | Webhook REST de entrada. Sem ela o servidor nem sobe |
+| `BITRIX_APPLICATION_TOKEN` | vazio | Token do webhook de **saída**. Sem ele, `/topSolid` aceita qualquer origem |
+| `PORT` | `3000` | Porta do servidor |
+| `CAIXAS_MONITORADAS` | `marketing@topsolidbrazil.com` | Caixa(s) que recebem os formulários |
+| `REMETENTES_PERMITIDOS` | `no-reply@topsolid.com`, `mkt.sales@topsolid.com`, `marketing@cadsolid.pt` | Quem envia/encaminha os formulários |
+| `BITRIX_EXCLUIR_LEAD_DESCONHECIDO` | `false` | Com `true`, exclui o lead de e-mail cujo assunto não é de formulário conhecido |
+| `BITRIX_ASSIGNED_BY_ID` | `105` | Responsável atribuído ao lead (Fernando Pasquali) |
+| `BITRIX_PAIS_PADRAO` | `919` (Brasil) | País quando o formulário não traz o campo |
+| `BITRIX_INTERVALO_MS` | `550` | Intervalo mínimo entre chamadas (limite ~2 req/s na nuvem) |
+| `BITRIX_TIMEOUT_MS` | `15000` | Timeout de cada chamada |
+| `BITRIX_DOMINIO` | derivado do webhook | Base dos links do mural |
+| `UF_*` | IDs atuais | Sobrescrevem os códigos dos campos customizados |
+
+Os IDs de campo e de lista **são específicos de cada portal**. Ao trocar de
+portal, rode `node tools/verificar.mjs` antes de subir.
+
+## Estrutura
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `server.js` | Sobe o HTTP, trata sinais e erros de processo |
+| `src/app.js` | Rotas e validação do webhook |
+| `src/topSolid.js` | Fluxo: atividade → layout → lead |
+| `src/layouts.js` | Catálogo dos formatos de e-mail (onde começa/termina cada campo) |
+| `src/htmlParser.js` | Extração e limpeza de valores do HTML |
+| `src/lead.js` | Monta e envia a atualização do lead e os posts do mural |
+| `src/bitrix.js` | Cliente REST do Bitrix (timeout + checagem de `data.error`) |
+| `src/config.js` | Configuração central |
+| `test/parser.test.mjs` | Testes do parser com amostras dos e-mails reais |
+| `tools/verificar.mjs` | Confere webhook, escopos, usuário, campos e IDs de lista do portal |
+| `tools/limpeza.mjs` | Remove contatos repetidos nos cartões (simulação por padrão, com backup e reversão) |
+| `tools/diagnostico.mjs` | Inspeção somente-leitura do CRM (e-mails acumulados, leads duplicados) |
+
+## Diagnóstico
+
+Somente leitura, não altera nada no CRM:
+
+```bash
+node tools/verificar.mjs                 # o portal está configurado como o código espera?
+node tools/diagnostico.mjs lead 12345    # e-mails/telefones de um lead
+node tools/diagnostico.mjs acumulados    # leads com mais de um e-mail no cartão
+node tools/diagnostico.mjs duplicados    # o mesmo e-mail em vários leads
+```
+
+## Suportar um formulário novo
+
+Adicione um objeto em `LAYOUTS` (`src/layouts.js`) com:
+
+- `combina(assunto)` — como reconhecer o e-mail;
+- `fim` — a tag que fecha cada campo (`</p>`, `</li>`, ...);
+- `campos` — para cada campo, o rótulo onde ele começa (`de`) e o rótulo do
+  campo seguinte (`ate`); `tipo: 'email'` liga a busca por `mailto:`;
+- `resumo` — quais campos entram no post de "Informações Brutas" do mural.
+
+Nenhum código novo é necessário. Vale acrescentar um caso em
+`test/parser.test.mjs` com uma amostra do HTML real.
+
+## Nota
+
+`server2.js` é a versão monolítica antiga, não é importada por nada e não roda.
+Mantida apenas como referência histórica.

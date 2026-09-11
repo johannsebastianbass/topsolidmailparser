@@ -1,0 +1,141 @@
+// Cliente do webhook REST do Bitrix24.
+//
+// Dois cuidados que faltavam na versão anterior:
+//  1. O Bitrix responde HTTP 200 mesmo quando a chamada falha — o erro vem em
+//     `data.error`. Sem checar isso, a integração falhava em silêncio.
+//  2. Toda requisição tem timeout. Sem timeout, uma chamada pendurada segura o
+//     processo indefinidamente.
+
+import axios from 'axios';
+import https from 'https';
+import config from './config.js';
+import { erro } from './logger.js';
+
+const agent = new https.Agent({ rejectUnauthorized: true });
+
+// O Bitrix limita cerca de 2 requisições por segundo por portal. Cada e-mail
+// processado faz 5 chamadas; com vários e-mails chegando juntos, parte delas
+// voltava com erro de limite — e, como o erro vinha em HTTP 200, ninguém via.
+// Aqui as chamadas são enfileiradas e espaçadas.
+const intervaloConfigurado = Number(process.env.BITRIX_INTERVALO_MS);
+const INTERVALO_MIN_MS = Number.isFinite(intervaloConfigurado) ? intervaloConfigurado : 550;
+const MAX_TENTATIVAS = 3;
+const BACKOFF_BASE_MS = 1000;
+const ERROS_TEMPORARIOS = /QUERY_LIMIT_EXCEEDED|OPERATION_TIME_LIMIT|OVERLOAD|ETIMEDOUT|ECONNRESET|ECONNABORTED|socket hang up|50[0-9]|429/i;
+
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let fila = Promise.resolve();
+let ultimaChamada = 0;
+
+/** Executa `fn` respeitando o intervalo mínimo entre chamadas ao portal. */
+function enfileirar(fn) {
+    const resultado = fila.then(async () => {
+        const faltando = INTERVALO_MIN_MS - (Date.now() - ultimaChamada);
+        if (faltando > 0) await espera(faltando);
+        ultimaChamada = Date.now();
+        return fn();
+    });
+    fila = resultado.then(() => {}, () => {});   // a fila não pode quebrar num erro
+    return resultado;
+}
+
+function ehTemporario(e) {
+    const texto = [e && e.message, e && e.code, e && e.response && e.response.status].join(' ');
+    return ERROS_TEMPORARIOS.test(texto);
+}
+
+/**
+ * Chama um método do Bitrix. Lança em erro de rede ou erro de negócio.
+ */
+export async function chamar(metodo, params = {}) {
+    if (!config.bitrix.webhook) {
+        throw new Error('BITRIX_WEBHOOK não definido (configure no ambiente ou no arquivo .env)');
+    }
+
+    let ultimoErro;
+    for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+        try {
+            return await enfileirar(() => requisitar(metodo, params));
+        } catch (e) {
+            ultimoErro = e;
+            if (!ehTemporario(e) || tentativa === MAX_TENTATIVAS) throw e;
+            const pausa = BACKOFF_BASE_MS * Math.pow(2, tentativa);
+            erro(`${metodo} falhou por limite/instabilidade; tentativa ${tentativa + 1} em ${pausa}ms`, e);
+            await espera(pausa);
+        }
+    }
+    throw ultimoErro;
+}
+
+async function requisitar(metodo, params) {
+    const resposta = await axios.post(`${config.bitrix.webhook}/${metodo}`, params, {
+        httpsAgent: agent,
+        timeout: config.bitrix.timeoutMs,
+        headers: { 'Content-Type': 'application/json' },
+    });
+
+    const data = resposta.data;
+    if (data && data.error) {
+        throw new Error(`${metodo}: ${data.error} - ${data.error_description || 'sem descrição'}`);
+    }
+    return data;
+}
+
+/**
+ * Igual a `chamar`, mas nunca lança: registra o erro e devolve null.
+ * Use para efeitos colaterais que não devem derrubar o fluxo principal
+ * (post no mural, por exemplo).
+ */
+export async function tentar(metodo, params = {}) {
+    try {
+        return await chamar(metodo, params);
+    } catch (e) {
+        erro(`chamada ao Bitrix '${metodo}'`, e);
+        return null;
+    }
+}
+
+export async function buscarAtividade(id) {
+    const data = await chamar('crm.activity.get', { ID: id });
+    return data && data.result;
+}
+
+export async function buscarLead(id) {
+    const data = await chamar('crm.lead.get', { ID: id });
+    return data && data.result;
+}
+
+export function atualizarLead(id, fields) {
+    return chamar('crm.lead.update', { ID: id, FIELDS: fields });
+}
+
+export function excluirLead(id) {
+    return chamar('crm.lead.delete', { ID: id });
+}
+
+/**
+ * Lista leads. `filter` é objeto — a versão anterior montava o JSON à mão com
+ * template string, o que quebrava se o e-mail tivesse aspas.
+ */
+export async function listarLeads(filter, select = ['ID', 'TITLE'], order = { ID: 'desc' }) {
+    const data = await chamar('crm.lead.list', { FILTER: filter, SELECT: select, ORDER: order });
+    return {
+        itens: (data && data.result) || [],
+        total: (data && data.total) || 0,
+    };
+}
+
+/**
+ * Publica uma mensagem no mural (livefeed) de um lead. Não lança.
+ */
+export function postarNoMural(leadId, mensagem, titulo = 'Mail Parser') {
+    return tentar('crm.livefeedmessage.add', {
+        FIELDS: {
+            POST_TITLE: titulo,
+            MESSAGE: mensagem,
+            ENTITYTYPEID: '1',
+            ENTITYID: leadId,
+        },
+    });
+}
