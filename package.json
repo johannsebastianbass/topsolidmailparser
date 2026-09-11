@@ -1,7 +1,7 @@
 {
-  "name": "tokengooglesheetbianco",
+  "name": "topsolid-mailparser",
   "version": "1.0.0",
-  "description": "",
+  "description": "Integração Bitrix24: lê o e-mail de formulário do site e preenche o lead",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -16,9 +16,10 @@
     "nodemon": "^2.0.20"
   },
   "dependencies": {
-    "axios": "^0.27.2",
-    "express": "^4.18.1",
-    "fast-csv": "^4.3.6",
-    "jsonwebtoken": "^8.5.1"
+    "axios": "^1.7.9",
+    "express": "^4.21.2"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
   }
 }
