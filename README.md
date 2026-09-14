@@ -42,6 +42,99 @@ código (`src/config.js`) e só precisa entrar no `.env` para sobrescrever:
 Os IDs de campo e de lista **são específicos de cada portal**. Ao trocar de
 portal, rode `node tools/verificar.mjs` antes de subir.
 
+## Instalação no servidor do Bitrix (on-premise)
+
+A aplicação roda como serviço systemd na mesma máquina do Bitrix, e o Bitrix a
+chama por um webhook de saída.
+
+```bash
+git clone <repo> /opt/topsolid-mailparser
+cd /opt/topsolid-mailparser
+npm ci --omit=dev
+cp .env.example .env      # e preencha as duas linhas
+node tools/verificar.mjs  # confere o portal antes de subir
+```
+
+Serviço (`/etc/systemd/system/topsolid-mailparser.service`):
+
+```ini
+[Unit]
+Description=TopSolid Mail Parser (integração Bitrix24)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zopu
+WorkingDirectory=/opt/topsolid-mailparser
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=topsolid-mailparser
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now topsolid-mailparser
+sudo journalctl -u topsolid-mailparser -f
+```
+
+### O Bitrix NÃO entrega webhook em localhost
+
+Este é o ponto que custa horas se não estiver escrito. Um webhook de saída
+apontando para `http://localhost:3000/topSolid` **nunca é chamado**: o Bitrix
+descarta em silêncio — sem erro na tela, sem linha em `b_rest_log`, sem nada na
+fila `b_rest_event_offline`. O handler aparece corretamente em `b_rest_event` e
+mesmo assim não dispara.
+
+A solução é expor a aplicação por uma URL normal do próprio domínio, com o
+nginx repassando para a porta local. No BitrixVM, crie
+`/etc/nginx/bx/site_settings/default/mailparser.conf`:
+
+```nginx
+location ^~ /mailparser/ {
+    proxy_pass http://127.0.0.1:3000/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Dois detalhes que importam:
+
+- **`^~` é obrigatório.** Sem ele, uma `location` com regex do `bitrix.conf`
+  vence o prefixo e a requisição cai no PHP do Bitrix (você recebe a tela de
+  login em vez da resposta da aplicação).
+- **A barra final do `proxy_pass`** é o que remove o prefixo: `/mailparser/topSolid`
+  chega na aplicação como `/topSolid`.
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+curl -s https://SEU_PORTAL/mailparser/health
+```
+
+### Webhook de saída no Bitrix
+
+**Aplicativos → Recursos para desenvolvedores → Outros → Webhook de saída**
+
+- URL: `https://SEU_PORTAL/mailparser/topSolid`
+- Evento: `ONCRMACTIVITYADD` — **somente esse**. Marcar também
+  `ONCRMACTIVITYUPDATE` faz cada e-mail ser processado duas vezes.
+
+Copie o token exibido e coloque em `BITRIX_APPLICATION_TOKEN` no `.env`, depois
+reinicie o serviço. Sem o token o endpoint aceita requisição de qualquer origem;
+com ele, responde 403 para quem não for o portal.
+
+Para testar sem depender de e-mail, crie qualquer atividade no CRM ("A fazer",
+"Ligação"). O log deve mostrar `atividade N não é e-mail (CRM_TODO/TODO);
+ignorada` — o que prova a cadeia inteira.
+
 ## Estrutura
 
 | Arquivo | Responsabilidade |
