@@ -135,6 +135,52 @@ Para testar sem depender de e-mail, crie qualquer atividade no CRM ("A fazer",
 "Ligação"). O log deve mostrar `atividade N não é e-mail (CRM_TODO/TODO);
 ignorada` — o que prova a cadeia inteira.
 
+## O que a integração exclui (e o que nunca exclui)
+
+A exclusão só acontece com `BITRIX_EXCLUIR_LEAD_DESCONHECIDO=true`. Desligada, o
+log registra `lead N SERIA excluído` — use isso para conferir antes de ligar.
+
+Mesmo ligada, **todo** caso passa pela mesma função com as mesmas travas: o lead
+tem que pertencer à atividade, ainda estar como o Bitrix o criou a partir do
+e-mail (`SOURCE_ID = EMAIL`) e atender à regra do caso. Lead que alguém já
+trabalhou, ou que a integração já preencheu, nunca é apagado.
+
+| Caso | O que acontece |
+| --- | --- |
+| Formulário reconhecido | preenche o lead |
+| Mesma submissão chegando 2× (mesmo e-mail e assunto em até 30 min) | apaga o 2º cartão e avisa no mural do original |
+| Devolução / reclamação / supressão da SES | apaga o lead-lixo criado para o remetente automático |
+| Remetente de formulário com assunto desconhecido | apaga o lead cru |
+| **Pessoa real escrevendo para o marketing** | **mantém o lead intacto** |
+| Resposta (`RE:`) | mantém o lead intacto |
+
+Os três primeiros casos de exclusão vieram de problemas reais em produção: o
+Hubspot às vezes manda a notificação de formulário duas vezes com 1 segundo de
+diferença, e uma campanha para uma lista ruim gera centenas de devoluções que
+viram atividades na caixa monitorada.
+
+**Leads-lixo de remetente automático:** o Bitrix às vezes grava o endereço no
+nome e no título e deixa o campo EMAIL vazio (acontece com as reclamações da
+SES). A regra considera isso — mas só aceita o nome/título se for de fato um
+endereço de e-mail automático, então um lead de pessoa real sem e-mail nunca é
+confundido.
+
+## Depois de uma campanha de marketing
+
+```bash
+node tools/devolucoes.mjs 2026-09-01     # endereços que devolveram, com tipo
+node tools/limpeza.mjs lixo              # leads-lixo de devolução (simulação)
+node tools/limpeza.mjs lixo --aplicar    # apaga, com backup
+```
+
+Rode o `devolucoes.mjs` **antes** do `lixo --aplicar`: apagar o lead-lixo apaga
+junto as devoluções anexadas a ele. O CSV separa devolução **permanente** (5xx:
+endereço não existe, tirar da lista) de **temporária** (4xx: caixa cheia, manter).
+
+Continuar mandando para endereço que devolve derruba a reputação da conta na
+Amazon SES. Acima de 5% de devolução a conta entra em revisão; acima de 10%, o
+envio é pausado.
+
 ## Estrutura
 
 | Arquivo | Responsabilidade |
@@ -149,7 +195,8 @@ ignorada` — o que prova a cadeia inteira.
 | `src/config.js` | Configuração central |
 | `test/parser.test.mjs` | Testes do parser com amostras dos e-mails reais |
 | `tools/verificar.mjs` | Confere webhook, escopos, usuário, campos e IDs de lista do portal |
-| `tools/limpeza.mjs` | Remove contatos repetidos nos cartões (simulação por padrão, com backup e reversão) |
+| `tools/limpeza.mjs` | Remove contatos repetidos e leads-lixo (simulação por padrão, com backup e reversão) |
+| `tools/devolucoes.mjs` | Lista os endereços que devolveram numa campanha, para tirar da lista de envio |
 | `tools/diagnostico.mjs` | Inspeção somente-leitura do CRM (e-mails acumulados, leads duplicados) |
 
 ## Diagnóstico

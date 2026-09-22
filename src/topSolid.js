@@ -2,10 +2,16 @@
 // formulário que originou o e-mail e atualiza o lead correspondente.
 
 import config from './config.js';
-import { buscarAtividade, excluirLead } from './bitrix.js';
+import { buscarAtividade, buscarLead, excluirLead } from './bitrix.js';
 import { acharLayout } from './layouts.js';
 import { extrairCampos } from './htmlParser.js';
-import { atualizarLeadComFormulario } from './lead.js';
+import {
+    atualizarLeadComFormulario,
+    acharSubmissaoAnterior,
+    registrarSubmissaoRepetida,
+    normalizarDados,
+    comTrava,
+} from './lead.js';
 import { log, erro, separador } from './logger.js';
 
 const TIPO_ENTIDADE_LEAD = 1;
@@ -16,6 +22,38 @@ const TIPO_ENTIDADE_LEAD = 1;
 // 'EMAIL_COMPRESSED', então a integração descartaria 100% delas. O corpo do
 // e-mail vem completo nos dois casos.
 const TIPOS_DE_EMAIL = ['EMAIL', 'EMAIL_COMPRESSED'];
+
+// Notificações automáticas de sistemas de e-mail: devolução (bounce), aviso de
+// supressão e reclamação de spam. Uma campanha de marketing para uma lista ruim
+// gera centenas delas de uma vez (255 em 22/09), e cada uma vira atividade na
+// caixa monitorada — o Bitrix cria um lead para o remetente
+// "mailer-daemon@...amazonses.com" e vai empilhando as devoluções nele.
+const REMETENTE_AUTOMATICO = /mailer-daemon|postmaster|email-abuse|@[\w.-]*amazonses\.com/i;
+
+export function ehRemetenteAutomatico(remetente) {
+    return REMETENTE_AUTOMATICO.test(String(remetente || ''));
+}
+
+const REGEX_ENDERECO = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+
+/**
+ * O lead foi criado para um remetente automático?
+ *
+ * Normalmente o endereço está no EMAIL do lead. Mas nos leads de reclamação da
+ * SES o Bitrix deixa o EMAIL VAZIO e põe o endereço no nome e no título (visto
+ * em 22/09: leads 31593, 31595, 31596, 31599). Nesse caso usa o endereço que
+ * estiver no nome/título — mas só se for de fato um endereço de e-mail. Um lead
+ * de pessoa real com e-mail vazio tem um nome ("João Silva"), não um endereço,
+ * e por isso nunca casa aqui.
+ */
+export function ehLeadDeRemetenteAutomatico(lead) {
+    if (!lead) return false;
+    let enderecos = (lead.EMAIL || []).map((e) => String(e.VALUE || '')).filter(Boolean);
+    if (!enderecos.length) {
+        enderecos = `${lead.NAME || ''} ${lead.TITLE || ''}`.match(REGEX_ENDERECO) || [];
+    }
+    return enderecos.length > 0 && enderecos.every(ehRemetenteAutomatico);
+}
 
 export function remetenteAceito(remetente) {
     const permitidos = config.remetentesPermitidos;
@@ -126,12 +164,23 @@ async function processarAtividade(idActivity) {
         return;
     }
 
-    // Filtro opcional por remetente. Os formulários chegam encaminhados sempre
-    // das mesmas caixas; com a lista preenchida, newsletter, cobrança e e-mail
-    // de fornecedor nem são tocados — nada de excluir lead por engano.
-    // Vazio (padrão) = aceita qualquer remetente.
+    // Devolução, supressão, reclamação: o lead que o Bitrix criou para o
+    // remetente automático é lixo. Só é apagado se o PRÓPRIO lead tiver como
+    // e-mail um endereço automático — uma devolução anexada a um cliente real
+    // nunca apaga o cliente.
+    if (ehRemetenteAutomatico(remetente)) {
+        await excluirLeadCriadoPeloEmail(atividade, 'notificação automática de e-mail (devolução/supressão/reclamação)', {
+            exigir: ehLeadDeRemetenteAutomatico,
+            descricaoExigencia: 'o lead não é de um endereço automático',
+        });
+        return;
+    }
+
+    // Filtro por remetente: decide o que é FORMULÁRIO a ser lido. Quem está fora
+    // da lista pode ser gente de verdade escrevendo para o marketing (em 22/09:
+    // Ferkoda S/A, Laurenti Moveis, Sidnei Pires) — esses leads ficam intactos.
     if (!remetenteAceito(remetente)) {
-        log(`ATENÇÃO: remetente '${remetente}' fora da lista permitida (${config.remetentesPermitidos.join(', ')}); ignorado. Se este for um formulário legítimo, acrescente o endereço em REMETENTES_PERMITIDOS.`);
+        log(`remetente '${remetente}' não é origem de formulário; lead mantido como está. Se for um formulário legítimo, acrescente o endereço em REMETENTES_PERMITIDOS.`);
         return;
     }
 
@@ -146,35 +195,87 @@ async function processarAtividade(idActivity) {
 
     const layout = acharLayout(assunto);
     if (!layout) {
-        await descartarLead(atividade, assunto);
+        await excluirLeadCriadoPeloEmail(atividade, `assunto não reconhecido ('${assunto}')`);
         return;
     }
 
     log('layout identificado', layout.id);
     const brutos = extrairCampos(atividade.DESCRIPTION || '', layout.campos, layout.fim);
+    const email = normalizarDados(brutos).email;
 
-    await atualizarLeadComFormulario(leadId, assunto, layout, brutos);
+    // Serializa pelo e-mail do cliente: se a mesma submissão chegar duas vezes
+    // ao mesmo tempo, a segunda só roda depois que a primeira gravou o lead, e
+    // assim consegue enxergá-la como anterior.
+    await comTrava(email ? `email:${email.toLowerCase()}` : `lead:${leadId}`, async () => {
+        const anterior = await acharSubmissaoAnterior(leadId, email, assunto);
+        if (anterior) {
+            log(`mesma submissão já registrada no lead ${anterior.ID}`);
+            const excluido = await excluirLeadCriadoPeloEmail(atividade, `submissão repetida do lead ${anterior.ID}`);
+            if (excluido) {
+                await registrarSubmissaoRepetida(anterior.ID, layout, assunto, brutos);
+                return;
+            }
+            // Não deu para excluir (exclusão desligada ou lead já trabalhado):
+            // preenche normalmente, como antes — o aviso de duplicidade aparece
+            // nos dois cards. Nunca deixar um lead cru para trás.
+        }
+
+        await atualizarLeadComFormulario(leadId, assunto, layout, brutos);
+    });
 }
 
 /**
- * Assunto desconhecido: o lead criado automaticamente pelo Bitrix não serve.
+ * Único caminho de exclusão da integração. Um lead só é apagado se TODAS as
+ * condições forem verdadeiras:
+ *
+ *  1. a atividade pertence a um lead (não a contato ou negócio);
+ *  2. o lead ainda está como o Bitrix o criou a partir do e-mail
+ *     (SOURCE_ID = 'EMAIL') — lead que alguém já trabalhou, ou que a própria
+ *     integração preencheu (WEBFORM), nunca é apagado;
+ *  3. a exigência específica do caso, quando houver;
+ *  4. a exclusão está ligada (BITRIX_EXCLUIR_LEAD_DESCONHECIDO=true).
+ *
+ * Com a exclusão desligada, registra no log o que SERIA apagado.
+ * Devolve true somente quando o lead foi de fato excluído.
  */
-async function descartarLead(atividade, assunto) {
+async function excluirLeadCriadoPeloEmail(atividade, motivo, { exigir, descricaoExigencia } = {}) {
     const leadId = atividade.OWNER_ID;
-    const tipo = Number(atividade.OWNER_TYPE_ID);
 
     // Sem essa checagem, uma atividade ligada a um negócio ou contato faria a
     // exclusão de um LEAD com o mesmo número de ID — outro registro qualquer.
-    if (!leadId || tipo !== TIPO_ENTIDADE_LEAD) {
-        log(`assunto não reconhecido ('${assunto}') e atividade não pertence a um lead; nada excluído`);
-        return;
+    if (!leadId || Number(atividade.OWNER_TYPE_ID) !== TIPO_ENTIDADE_LEAD) {
+        log(`${motivo}; atividade não pertence a um lead, nada excluído`);
+        return false;
+    }
+
+    let lead;
+    try {
+        lead = await buscarLead(leadId);
+    } catch (e) {
+        erro(`leitura do lead ${leadId} antes de excluir`, e);
+        return false;
+    }
+    if (!lead) {
+        log(`${motivo}; lead ${leadId} já não existe`);
+        return false;
+    }
+
+    if (lead.SOURCE_ID !== 'EMAIL') {
+        log(`${motivo}; lead ${leadId} mantido — origem '${lead.SOURCE_ID}', já foi trabalhado ou preenchido`);
+        return false;
+    }
+
+    if (exigir && !exigir(lead)) {
+        log(`${motivo}; lead ${leadId} mantido — ${descricaoExigencia || 'não confere com o esperado'}`);
+        return false;
     }
 
     if (!config.excluirLeadDesconhecido) {
-        log(`assunto não reconhecido ('${assunto}'); lead ${leadId} SERIA excluído (exclusão desligada)`);
-        return;
+        log(`${motivo}; lead ${leadId} SERIA excluído (exclusão desligada)`);
+        return false;
     }
 
-    log(`assunto não reconhecido ('${assunto}'); excluindo lead ${leadId}`);
+    log(`${motivo}; excluindo lead ${leadId}`);
     await excluirLead(leadId);
+    return true;
 }

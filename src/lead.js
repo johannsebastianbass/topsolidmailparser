@@ -242,10 +242,79 @@ async function avisarDuplicidade(leadId, dados) {
     ]);
 }
 
-// Uma fila por lead. Duas mensagens do mesmo lead chegando juntas fariam as
-// duas lerem o EMAIL antigo e cada uma acrescentar o seu — mais um caminho para
-// o cartão terminar com vários e-mails.
-const filaPorLead = new Map();
+// Filas por chave: execuções com a mesma chave rodam uma de cada vez.
+const filas = new Map();
+
+/**
+ * Executa `fn` depois de todas as execuções anteriores com a mesma `chave`.
+ *
+ * Serve para dois casos reais:
+ *  - por lead: duas mensagens do mesmo lead chegando juntas leriam o EMAIL
+ *    antigo e cada uma acrescentaria o seu;
+ *  - por e-mail do cliente: o Hubspot às vezes manda a mesma notificação de
+ *    formulário duas vezes, com 1 segundo de diferença, gerando DOIS leads
+ *    (visto em 22/09: leads 31597 e 31598). Sem serializar pelo e-mail, a
+ *    segunda checaria duplicidade antes de a primeira terminar de gravar.
+ */
+export function comTrava(chave, fn) {
+    const anterior = filas.get(chave) || Promise.resolve();
+    const atual = anterior.catch(() => {}).then(fn);
+
+    filas.set(chave, atual);
+    atual.catch(() => {}).then(() => {
+        if (filas.get(chave) === atual) filas.delete(chave);
+    });
+
+    return atual;
+}
+
+// Mesma pessoa, mesmo formulário, dentro desta janela = a mesma submissão
+// chegando repetida, não uma nova conversão.
+const JANELA_SUBMISSAO_REPETIDA_MS = 30 * 60 * 1000;
+
+/**
+ * Procura um lead que a integração já preencheu para a MESMA submissão:
+ * mesmo e-mail, mesmo assunto, criado há pouco. Devolve o lead ou null.
+ *
+ * A comparação de data é feita aqui, não no filtro do Bitrix, para não
+ * depender de como ele interpreta fuso horário.
+ */
+export async function acharSubmissaoAnterior(leadId, email, assunto, agora = Date.now()) {
+    if (!email || !assunto) return null;
+
+    let resultado;
+    try {
+        resultado = await bitrix.listarLeads(
+            { EMAIL: email, '!ID': leadId },
+            ['ID', 'TITLE', 'SOURCE_ID', 'SOURCE_DESCRIPTION', 'DATE_CREATE'],
+            { ID: 'desc' }
+        );
+    } catch (e) {
+        erro('busca por submissão repetida', e);
+        return null;
+    }
+
+    return resultado.itens.find((l) => ehMesmaSubmissao(l, assunto, agora)) || null;
+}
+
+/** Exportada para teste. */
+export function ehMesmaSubmissao(lead, assunto, agora = Date.now()) {
+    if (!lead || String(lead.SOURCE_DESCRIPTION || '').trim() !== String(assunto).trim()) return false;
+    const criado = Date.parse(lead.DATE_CREATE);
+    return Number.isFinite(criado) && agora - criado >= 0 && agora - criado <= JANELA_SUBMISSAO_REPETIDA_MS;
+}
+
+/**
+ * Submissão repetida: em vez de preencher um segundo cartão, registra no mural
+ * do cartão original que o formulário chegou de novo — com os dados, para que
+ * nada se perca se a pessoa tiver corrigido alguma informação.
+ */
+export function registrarSubmissaoRepetida(anteriorId, layout, assunto, brutos) {
+    const dados = normalizarDados(brutos);
+    const texto = montarResumo(layout, assunto, dados)
+        .replace('Informações Brutas:', 'O mesmo formulário chegou novamente. Informações recebidas:');
+    return bitrix.postarNoMural(anteriorId, texto);
+}
 
 /**
  * Atualiza o lead com os dados do formulário e publica o resumo no mural.
@@ -257,17 +326,7 @@ export function atualizarLeadComFormulario(leadId, assunto, layout, brutos) {
         return Promise.resolve();
     }
 
-    const anterior = filaPorLead.get(leadId) || Promise.resolve();
-    const atual = anterior
-        .catch(() => {})
-        .then(() => executarAtualizacao(leadId, assunto, layout, brutos));
-
-    filaPorLead.set(leadId, atual);
-    atual.catch(() => {}).then(() => {
-        if (filaPorLead.get(leadId) === atual) filaPorLead.delete(leadId);
-    });
-
-    return atual;
+    return comTrava(`lead:${leadId}`, () => executarAtualizacao(leadId, assunto, layout, brutos));
 }
 
 async function executarAtualizacao(leadId, assunto, layout, brutos) {

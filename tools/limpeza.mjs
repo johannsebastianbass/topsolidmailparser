@@ -4,6 +4,7 @@
 //   node tools/limpeza.mjs repetidos --aplicar    -> executa e grava backup
 //   node tools/limpeza.mjs revisao                -> CSV do que exige decisão humana
 //   node tools/limpeza.mjs reverter <backup.json> --aplicar  -> desfaz a limpeza
+//   node tools/limpeza.mjs lixo                   -> leads-lixo de devolução/reclamação (simulação)
 //
 // Opções: --paginas N (padrão 40, ou seja 2000 leads) | --backup <arquivo>
 //
@@ -231,10 +232,66 @@ async function comandoReverter() {
     console.log(`\n${restaurados} cartões restaurados.`);
 }
 
-const acoes = { repetidos: comandoRepetidos, revisao: comandoRevisao, reverter: comandoReverter };
+/**
+ * Apaga os leads-lixo que o Bitrix criou para remetentes automáticos
+ * (mailer-daemon, reclamação, supressão). Usa a MESMA regra do código de
+ * produção (src/topSolid.js): origem EMAIL e todos os e-mails do lead são
+ * endereços automáticos. Simulação por padrão; --aplicar grava backup antes.
+ */
+async function comandoLixo() {
+    const { ehLeadDeRemetenteAutomatico } = await import('../src/topSolid.js');
+
+    const candidatos = [];
+    let start = 0;
+    for (let p = 0; p < 200; p++) {
+        const r = await chamar('crm.lead.list', {
+            FILTER: { SOURCE_ID: 'EMAIL' },
+            SELECT: ['ID', 'TITLE', 'NAME', 'EMAIL', 'SOURCE_ID', 'DATE_CREATE', 'STATUS_ID'],
+            ORDER: { ID: 'desc' },
+            start,
+        });
+        for (const l of r.result || []) {
+            if (ehLeadDeRemetenteAutomatico(l)) candidatos.push(l);
+        }
+        process.stdout.write(`\r verificados ${start + (r.result || []).length} leads de origem EMAIL...`);
+        if (r.next === undefined) break;
+        start = r.next;
+    }
+    process.stdout.write('\r                                                  \r');
+
+    console.log(`\n${candidatos.length} leads-lixo de remetente automático\n`);
+    for (const l of candidatos) {
+        const n = (await chamar('crm.activity.list', { FILTER: { OWNER_TYPE_ID: 1, OWNER_ID: l.ID }, SELECT: ['ID'] })).total;
+        l._atividades = n;
+        const quem = (l.EMAIL || []).map((e) => e.VALUE).join(', ') || `(sem e-mail) ${l.NAME || l.TITLE}`;
+        console.log(`   lead ${String(l.ID).padEnd(7)} ${l.DATE_CREATE.slice(0, 10)}  ${String(n).padStart(4)} atividades  ${quem}`);
+    }
+    if (!candidatos.length) return;
+
+    if (!aplicar) {
+        console.log('\nSIMULACAO - nada foi alterado. Para executar de verdade: --aplicar');
+        console.log('Antes de aplicar, rode tools/devolucoes.mjs: apagar o lead apaga as devoluções anexadas a ele.');
+        return;
+    }
+
+    fs.writeFileSync(arquivoBackup, JSON.stringify(candidatos, null, 2), 'utf8');
+    console.log(`\nbackup dos leads: ${arquivoBackup}`);
+    let feitos = 0;
+    for (const l of candidatos) {
+        try {
+            await chamar('crm.lead.delete', { ID: l.ID });
+            feitos++;
+        } catch (e) {
+            console.log(`   lead ${l.ID} falhou: ${(e && e.message) || e}`);
+        }
+    }
+    console.log(`${feitos}/${candidatos.length} leads-lixo excluídos.`);
+}
+
+const acoes = { repetidos: comandoRepetidos, revisao: comandoRevisao, reverter: comandoReverter, lixo: comandoLixo };
 
 if (!acoes[comando]) {
-    console.log('uso: node tools/limpeza.mjs <repetidos|revisao|reverter <arquivo>> [--aplicar] [--paginas N]');
+    console.log('uso: node tools/limpeza.mjs <repetidos|revisao|lixo|reverter <arquivo>> [--aplicar] [--paginas N]');
     process.exit(1);
 }
 

@@ -1,5 +1,5 @@
-node_modules
-.env
-log.txt
 *.csv
+.env
 limpeza-backup-*.json
+log.txt
+node_modules
