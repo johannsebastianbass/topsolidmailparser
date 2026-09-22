@@ -167,15 +167,27 @@ confundido.
 
 ## Depois de uma campanha de marketing
 
+Cada devolução, supressão ou reclamação que chega na caixa monitorada é gravada
+em **`devolucoes.csv`** (na pasta da aplicação) **antes** de o lead-lixo ser
+apagado — inclusive com a exclusão desligada. É a lista que o marketing usa
+para limpar a base de envio:
+
 ```bash
-node tools/devolucoes.mjs 2026-09-01     # endereços que devolveram, com tipo
+cat /opt/topsolid-mailparser/devolucoes.csv
+sudo journalctl -u topsolid-mailparser | grep DEVOLUÇÃO
+```
+
+O CSV separa devolução **permanente** (5xx: endereço não existe, tirar da lista)
+de **temporária** (4xx: caixa cheia, manter).
+
+Para o histórico que já estava no CRM antes desta versão, ou para limpar
+leads-lixo pendentes manualmente:
+
+```bash
+node tools/devolucoes.mjs 2026-09-01     # extrai do CRM, com tipo
 node tools/limpeza.mjs lixo              # leads-lixo de devolução (simulação)
 node tools/limpeza.mjs lixo --aplicar    # apaga, com backup
 ```
-
-Rode o `devolucoes.mjs` **antes** do `lixo --aplicar`: apagar o lead-lixo apaga
-junto as devoluções anexadas a ele. O CSV separa devolução **permanente** (5xx:
-endereço não existe, tirar da lista) de **temporária** (4xx: caixa cheia, manter).
 
 Continuar mandando para endereço que devolve derruba a reputação da conta na
 Amazon SES. Acima de 5% de devolução a conta entra em revisão; acima de 10%, o
