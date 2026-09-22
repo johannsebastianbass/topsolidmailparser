@@ -232,6 +232,9 @@ export const MAPA_FIELD_OF_APPLICATION = {
     'Sheet Metal Working / Boilerwork': 1076,    // Trabalho em chapa / Caldeiraria
     'Woodworking Industry': 1077,                // Indústria madeireira
     'Metalworking': 1078,                        // Metalmecânica
+    // Variantes em francês que os formulários mandam de fato (vistas em 09/2026).
+    "Bureau d'étude (CAO)": 1073,                 // = Design Department (CAD)
+    'Industrie du bois': 1077,                   // = Woodworking Industry
 };
 
 // País (UF_CRM_1677508604). Antes era o valor fixo '1625', que não existe neste
@@ -320,22 +323,70 @@ export const MAPA_PAIS = {
 };
 
 /**
- * Converte o país do formulário no ID da lista. Ignora caixa e acento;
- * devolve '' quando não reconhece.
+ * Normaliza um rótulo para comparação: sem acento, sem diferença de maiúscula,
+ * espaços e apóstrofos uniformizados. "Steel industry" e "Steel Industry",
+ * "Bureau d’étude" e "Bureau d'étude" passam a ser o mesmo valor — antes a
+ * comparação era exata e um "i" minúsculo deixava o campo vazio.
  */
-export function idDoPais(pais) {
-    const alvo = normalizarPais(pais);
+export function normalizarRotulo(valor) {
+    return String(valor || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[\u2018\u2019\u00b4`]/g, "'")
+        .replace(/\s+/g, ' ')
+        .toLowerCase()
+        .trim();
+}
+
+/**
+ * Procura o valor numa lista de IDs do Bitrix ignorando acento e maiúsculas.
+ * Devolve '' quando não reconhece.
+ */
+export function idDaLista(mapa, valor) {
+    const alvo = normalizarRotulo(valor);
     if (!alvo) return '';
-    for (const nome of Object.keys(MAPA_PAIS)) {
-        if (normalizarPais(nome) === alvo) return MAPA_PAIS[nome];
+    for (const rotulo of Object.keys(mapa)) {
+        if (normalizarRotulo(rotulo) === alvo) return mapa[rotulo];
     }
     return '';
 }
 
-function normalizarPais(valor) {
-    return String(valor || '')
-        .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '')
-        .toLowerCase()
-        .trim();
+// Código ISO 3166 de duas letras -> nome usado no MAPA_PAIS. Os formulários
+// [Contact] mandam só o código ("BR" em 12 dos 19 leads de 09/2026).
+const PAIS_POR_ISO = {
+    AF: 'Afghanistan', ZA: 'South Africa', DE: 'Germany', AR: 'Argentina', AU: 'Australia',
+    AT: 'Austria', BD: 'Bangladesh', BE: 'Belgium', BR: 'Brazil', CA: 'Canada', CL: 'Chile',
+    CN: 'China', CO: 'Colombia', KR: 'South Korea', CU: 'Cuba', DK: 'Denmark', EG: 'Egypt',
+    ES: 'Spain', US: 'United States', FR: 'France', GR: 'Greece', IN: 'India', ID: 'Indonesia',
+    IR: 'Iran', IE: 'Ireland', IL: 'Israel', IT: 'Italy', JP: 'Japan', LB: 'Lebanon',
+    MX: 'Mexico', MZ: 'Mozambique', NG: 'Nigeria', NO: 'Norway', NZ: 'New Zealand',
+    PK: 'Pakistan', PY: 'Paraguay', PE: 'Peru', PL: 'Poland', PT: 'Portugal',
+    GB: 'United Kingdom', UK: 'United Kingdom', RU: 'Russia', SE: 'Sweden', CH: 'Switzerland',
+    TR: 'Turkey', UA: 'Ukraine', UY: 'Uruguay', VE: 'Venezuela', VN: 'Vietnam',
+};
+
+/**
+ * Converte o país do formulário no ID da lista. Aceita:
+ *  - o nome em inglês, espanhol ou português ("Brazil", "Brasil");
+ *  - o código ISO de duas letras ("BR", "FR");
+ *  - o formato composto do formulário [Contact] ("Brasil -/- Brazil").
+ * Devolve '' quando não reconhece — nunca chuta um país.
+ */
+export function idDoPais(pais) {
+    const bruto = String(pais || '').trim();
+    if (!bruto) return '';
+
+    const direto = idDaLista(MAPA_PAIS, bruto);
+    if (direto) return direto;
+
+    if (/^[a-z]{2}$/i.test(bruto)) {
+        const nome = PAIS_POR_ISO[bruto.toUpperCase()];
+        return nome ? idDaLista(MAPA_PAIS, nome) : '';
+    }
+
+    for (const parte of bruto.split(/\s*(?:-\/-|\/|\|)\s*/)) {
+        const id = parte && idDaLista(MAPA_PAIS, parte);
+        if (id) return id;
+    }
+    return '';
 }

@@ -320,6 +320,50 @@ await t('REGRESSAO: resumo do formulário vai para a linha do tempo (livefeed fo
     assert.ok(!estado.chamadas.includes('crm.livefeedmessage.add'), 'não pode usar o método desativado');
 });
 
+// ---------- o formulário "Get a quote" padrão ----------
+
+await t('QUOTE: formulário normal cria/preenche o lead e NUNCA é apagado (exclusão ligada)', async () => {
+    config.excluirLeadDesconhecido = true;
+    lead(1100, { email: 'mkt.sales@topsolid.com' });   // como o Bitrix cria: com o e-mail do remetente
+    email(++seq, { de: 'Hubspot Landing <mkt.sales@topsolid.com>', assunto: 'Get a quote', lead: 1100, corpo: FORMULARIO });
+    await rodar(seq);
+    const l = estado.leads[1100];
+    assert.ok(l, 'o lead do quote tem que existir');
+    assert.deepStrictEqual(estado.excluidos, [], 'nada pode ser apagado');
+    assert.strictEqual(l.SOURCE_ID, 'WEBFORM');
+    assert.strictEqual(l.TITLE, 'D.S SCHIAVETTO');
+    assert.strictEqual(l.SOURCE_DESCRIPTION, 'Get a quote');
+    assert.deepStrictEqual(l.EMAIL.map((e) => e.VALUE), ['vinicius@ds.ind.br'], 'e-mail do remetente trocado pelo do cliente');
+    assert.ok(estado.posts.some((p) => p.lead === '1100' && /Informações Brutas/.test(p.texto)), 'resumo publicado');
+});
+
+await t('QUOTE: mesma pessoa pedindo orçamento de novo DIAS depois não é duplicata', async () => {
+    config.excluirLeadDesconhecido = true;
+    // quote antigo, de 3 dias atrás, já preenchido
+    lead(1200, { email: 'vinicius@ds.ind.br', origem: 'WEBFORM', assunto: 'Get a quote', criadoMs: -3 * 864e5 });
+    lead(1201, { email: 'mkt.sales@topsolid.com' });
+    email(++seq, { de: 'Hubspot Landing <mkt.sales@topsolid.com>', assunto: 'Get a quote', lead: 1201, corpo: FORMULARIO });
+    await rodar(seq);
+    assert.deepStrictEqual(estado.excluidos, []);
+    assert.strictEqual(estado.leads[1201].SOURCE_ID, 'WEBFORM', 'o novo quote é preenchido normalmente');
+    assert.ok(estado.leads[1200], 'o antigo continua');
+});
+
+await t('QUOTE: vindo dos três remetentes de formulário, todos preenchem', async () => {
+    config.excluirLeadDesconhecido = true;
+    const remetentes = ['TopSolid <no-reply@topsolid.com>', 'Hubspot Landing <mkt.sales@topsolid.com>', 'CadSolid <marketing@cadsolid.pt>'];
+    for (const [i, de] of remetentes.entries()) {
+        const id = 1300 + i;
+        // e-mails de cliente diferentes para não cair na regra de duplicata
+        const corpo = FORMULARIO.replace(/vinicius@ds\.ind\.br/g, `cliente${i}@exemplo.com.br`);
+        lead(id, { email: 'remetente@x.com' });
+        email(++seq, { de, assunto: 'Get a quote', lead: id, corpo });
+        await rodar(seq);
+        assert.strictEqual(estado.leads[id].SOURCE_ID, 'WEBFORM', `não preencheu vindo de ${de}`);
+    }
+    assert.deepStrictEqual(estado.excluidos, []);
+});
+
 // ---------- assunto desconhecido ----------
 
 await t('SEGURANÇA: assunto desconhecido não apaga lead que já foi preenchido', async () => {

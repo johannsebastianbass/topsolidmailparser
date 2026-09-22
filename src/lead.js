@@ -10,6 +10,7 @@ import {
     MAPA_INDUSTRY_INTEREST,
     MAPA_FIELD_OF_APPLICATION,
     idDoPais,
+    idDaLista,
 } from './layouts.js';
 
 const texto = (valor) => (valor === undefined || valor === null ? '' : String(valor).trim());
@@ -44,8 +45,7 @@ export function normalizarTelefone(bruto, pais) {
 }
 
 function indiceDe(mapa, valor) {
-    const chave = texto(valor);
-    return chave && Object.prototype.hasOwnProperty.call(mapa, chave) ? mapa[chave] : '';
+    return idDaLista(mapa, valor);
 }
 
 /**
@@ -181,8 +181,12 @@ export function montarCamposDoLead(assunto, dados, contatos) {
     sePreenchido(c.cep, dados.zipCode);
 
     // País: antes era o ID fixo '1625' (do portal antigo, inexistente aqui).
-    // Agora vem do campo Country do próprio formulário.
-    const pais = idDoPais(dados.country) || config.lead.paisPadrao;
+    // Agora vem do campo Country do próprio formulário. O padrão (Brasil) só é
+    // usado quando o formulário NÃO tem o campo — os formulários em português
+    // não têm. Se o campo veio e não foi reconhecido, fica vazio: gravar Brasil
+    // num lead da França seria pior do que não gravar nada. O valor original
+    // fica no resumo da linha do tempo de qualquer forma.
+    const pais = dados.country ? idDoPais(dados.country) : config.lead.paisPadrao;
     if (pais) fields[c.pais] = String(pais);   // o ID do mapa é número, o padrão é string
 
     // null = campo já está correto (ou não temos valor); não mandamos para não

@@ -1,6 +1,6 @@
 import assert from 'assert';
 import { extrairCampos, limparHtml } from '../src/htmlParser.js';
-import { acharLayout } from '../src/layouts.js';
+import { acharLayout, idDoPais, idDaLista, MAPA_INDUSTRY_INTEREST, MAPA_FIELD_OF_APPLICATION } from '../src/layouts.js';
 import { ehRespostaDeEmail, remetenteAceito } from '../src/topSolid.js';
 import { normalizarDados, montarResumo, normalizarTelefone, montarMultifield, montarCamposDoLead } from '../src/lead.js';
 
@@ -335,6 +335,41 @@ t('pais vem do formulario; sem pais usa o padrao', () => {
     assert.strictEqual(comPais['UF_CRM_1677508604'], '913');   // sempre string
     const semPais = montarCamposDoLead('x', normalizarDados({}), { EMAIL: null, PHONE: null });
     assert.strictEqual(semPais['UF_CRM_1677508604'], '919');
+});
+
+// ---------- listas do Bitrix: valores reais que os formulários mandam ----------
+
+t('país: código ISO e formato composto do formulário [Contact]', () => {
+    assert.strictEqual(idDoPais('BR'), 919);                  // 12 dos 19 leads de 09/2026
+    assert.strictEqual(idDoPais('Brasil -/- Brazil'), 919);   // os outros 7
+    assert.strictEqual(idDoPais('FR'), 930);
+    assert.strictEqual(idDoPais('UK'), 950);
+});
+
+t('país: valor não reconhecido NÃO vira um chute', () => {
+    assert.strictEqual(idDoPais('XX'), '');
+    assert.strictEqual(idDoPais('Freedonia'), '');
+});
+
+t('REGRESSAO: país informado e não reconhecido não é gravado como Brasil', () => {
+    const f = montarCamposDoLead('x', normalizarDados({ country: 'Freedonia' }), { EMAIL: null, PHONE: null });
+    assert.ok(!('UF_CRM_1677508604' in f), `não pode chutar Brasil: ${f.UF_CRM_1677508604}`);
+    const semCampo = montarCamposDoLead('x', normalizarDados({}), { EMAIL: null, PHONE: null });
+    assert.strictEqual(semCampo.UF_CRM_1677508604, '919', 'sem o campo, o padrão continua valendo');
+});
+
+t('REGRESSAO: lista ignora maiúscula — "Steel industry" do site', () => {
+    assert.strictEqual(idDaLista(MAPA_INDUSTRY_INTEREST, 'Steel industry'), 1007);
+});
+
+t('lista: variantes em francês que o site manda', () => {
+    assert.strictEqual(idDaLista(MAPA_FIELD_OF_APPLICATION, "Bureau d'étude (CAO)"), 1073);
+    assert.strictEqual(idDaLista(MAPA_FIELD_OF_APPLICATION, 'Bureau d’étude (CAO)'), 1073, 'apóstrofo tipográfico');
+    assert.strictEqual(idDaLista(MAPA_FIELD_OF_APPLICATION, 'Industrie du bois'), 1077);
+});
+
+t('lista: "Tooling" continua sem correspondência (não existe opção no Bitrix)', () => {
+    assert.strictEqual(idDaLista(MAPA_INDUSTRY_INTEREST, 'Tooling'), '');
 });
 
 console.log(`\n${ok} passaram, ${falhas} falharam`);
