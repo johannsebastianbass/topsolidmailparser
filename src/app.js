@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import express from 'express';
 import topSolid from './topSolid.js';
 import config from './config.js';
@@ -21,8 +24,32 @@ app.get('/teste', (req, res) => {
     res.status(200).json({ message: 'Teste' });
 });
 
+// O que esta versão sabe fazer. tools/contatos-canal.mjs só cria os contatos
+// de canal se o servidor anunciar 'formulario-em-contato': a versão antiga não
+// conferia o tipo do dono da atividade e atualizaria um lead qualquer.
+export const RECURSOS = ['formulario-em-contato', 'nunca-exclui', 'ralo-de-devolucao'];
+
+/** Commit em execução, lido do .git sem depender do binário do git. */
+function commitAtual() {
+    try {
+        const git = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.git');
+        const head = fs.readFileSync(path.join(git, 'HEAD'), 'utf8').trim();
+        if (!head.startsWith('ref: ')) return head.slice(0, 7);
+        const ref = head.slice(5);
+        const solto = path.join(git, ref);
+        if (fs.existsSync(solto)) return fs.readFileSync(solto, 'utf8').trim().slice(0, 7);
+        const linha = fs.readFileSync(path.join(git, 'packed-refs'), 'utf8')
+            .split('\n').find((l) => l.endsWith(` ${ref}`));
+        return linha ? linha.slice(0, 7) : null;
+    } catch {
+        return null;
+    }
+}
+
+const COMMIT = commitAtual();
+
 app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+    res.status(200).json({ status: 'ok', uptime: process.uptime(), commit: COMMIT, recursos: RECURSOS });
 });
 
 // Rotas mantidas da versão anterior: ainda são placeholders, o log continua

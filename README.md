@@ -208,6 +208,12 @@ Com isso:
   o e-mail a ele (o DE/PARA aparece na linha do tempo);
 - qualquer outro e-mail → não vira nada, fica na caixa para o marketing.
 
+Os contatos são criados com `node tools/contatos-canal.mjs` (simulação) e
+`node tools/contatos-canal.mjs --aplicar`. A ferramenta lê o `/mailparser/health`
+de produção e **se recusa a rodar** enquanto o servidor não estiver na versão
+nova. O `/health` informa `commit` e `recursos`, o que também serve para
+confirmar uma instalação.
+
 **Ordem obrigatória:** instalar esta versão **antes** de criar os contatos. A
 versão anterior não conferia o tipo do dono da atividade: um formulário caindo
 num contato faria ela atualizar um *lead* qualquer com o mesmo número de ID.
