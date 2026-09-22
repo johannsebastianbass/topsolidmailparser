@@ -12,6 +12,7 @@ import {
     normalizarDados,
     comTrava,
 } from './lead.js';
+import { lerNotificacao, gravarDevolucoes } from './devolucao.js';
 import { log, erro, separador } from './logger.js';
 
 const TIPO_ENTIDADE_LEAD = 1;
@@ -169,6 +170,13 @@ async function processarAtividade(idActivity) {
     // e-mail um endereço automático — uma devolução anexada a um cliente real
     // nunca apaga o cliente.
     if (ehRemetenteAutomatico(remetente)) {
+        // Registra os endereços ANTES de qualquer exclusão: apagar o lead-lixo
+        // apaga junto a atividade, que é a única cópia no CRM do endereço que
+        // falhou. Uma falha aqui interrompe o fluxo e impede a exclusão.
+        const registros = lerNotificacao(atividade);
+        gravarDevolucoes(config.arquivoDevolucoes, registros, atividade.ID);
+        for (const r of registros) log(`DEVOLUÇÃO ${r.tipo}: ${r.email} — ${r.motivo}`);
+
         await excluirLeadCriadoPeloEmail(atividade, 'notificação automática de e-mail (devolução/supressão/reclamação)', {
             exigir: ehLeadDeRemetenteAutomatico,
             descricaoExigencia: 'o lead não é de um endereço automático',

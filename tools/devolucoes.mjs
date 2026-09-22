@@ -10,41 +10,12 @@
 
 import fs from 'fs';
 import { chamar } from '../src/bitrix.js';
+import { lerNotificacao, tipoDe } from '../src/devolucao.js';
 
 const desde = process.argv[2] || new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
 
 // Remetentes das notificações automáticas (devolução e reclamação).
 const REMETENTE_AUTOMATICO = /mailer-daemon|postmaster|email-abuse|amazonses\.com/i;
-
-// Endereços que nunca são o destinatário que falhou.
-const IGNORAR = /amazonses\.com|email-abuse|mailer-daemon|postmaster|@topsolidbrazil\.com$|@topsolid\.com$|@cadsolid\.pt$/i;
-
-const REGEX_EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
-
-const limpar = (html) => String(html || '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#(\d+);/g, (m, d) => String.fromCharCode(Number(d)))
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ');
-
-// 5xx = permanente (o endereço não serve mais: tirar da lista).
-// 4xx = temporária (caixa cheia, servidor ocupado): manter, pode entregar depois.
-function tipoDe(motivo) {
-    if (/supress|reclama/i.test(motivo)) return 'permanente';
-    const m = String(motivo).match(/(?:^|\D)([45])\d\d(?:\D|$)/);
-    if (m) return m[1] === '4' ? 'temporaria' : 'permanente';
-    return 'permanente';
-}
-
-function motivoDe(texto) {
-    const m = texto.match(/\b([45]\d\d)[ -]?(\d\.\d\.\d+)?[^.]{0,90}/);
-    if (/suppression list/i.test(texto)) return 'na lista de supressão da SES';
-    if (/complaint/i.test(texto)) return 'reclamação de spam';
-    return m ? m[0].trim().slice(0, 90) : 'devolução';
-}
 
 async function lerNotificacoes() {
     const itens = [];
@@ -74,12 +45,9 @@ const porEndereco = new Map();
 for (const n of notificacoes) {
     // A lista não traz DESCRIPTION; o corpo precisa de get individual.
     const a = (await chamar('crm.activity.get', { ID: n.ID })).result || {};
-    const texto = limpar(a.DESCRIPTION);
-    const motivo = motivoDe(texto);
-    const enderecos = [...new Set((texto.match(REGEX_EMAIL) || []).map((e) => e.toLowerCase()))]
-        .filter((e) => !IGNORAR.test(e));
-
-    for (const e of enderecos) {
+    for (const r of lerNotificacao(a)) {
+        const e = r.email;
+        const motivo = r.motivo;
         const atual = porEndereco.get(e) || { vezes: 0, motivo, ultima: n.CREATED, assunto: a.SUBJECT };
         atual.vezes++;
         atual.ultima = n.CREATED;

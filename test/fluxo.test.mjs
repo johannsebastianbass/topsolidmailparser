@@ -4,6 +4,9 @@
 
 import assert from 'assert';
 import http from 'http';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 // ---------- Bitrix simulado ----------
 
@@ -59,10 +62,22 @@ const bitrix = http.createServer((req, res) => {
 await new Promise((r) => bitrix.listen(0, '127.0.0.1', r));
 process.env.BITRIX_WEBHOOK = `http://127.0.0.1:${bitrix.address().port}/rest`;
 process.env.BITRIX_INTERVALO_MS = '0';
+const CSV_DEVOLUCOES = path.join(os.tmpdir(), `devolucoes-teste-${process.pid}.csv`);
+process.env.ARQUIVO_DEVOLUCOES = CSV_DEVOLUCOES;
 
 const { default: config } = await import('../src/config.js');
 const { default: topSolid, ehRemetenteAutomatico, ehLeadDeRemetenteAutomatico } = await import('../src/topSolid.js');
 const { ehMesmaSubmissao } = await import('../src/lead.js');
+const { lerNotificacao } = await import('../src/devolucao.js');
+
+const lerCsv = () => (fs.existsSync(CSV_DEVOLUCOES) ? fs.readFileSync(CSV_DEVOLUCOES, 'utf8') : '');
+const limparCsv = () => { if (fs.existsSync(CSV_DEVOLUCOES)) fs.unlinkSync(CSV_DEVOLUCOES); };
+
+// corpo real de uma devolução da SES (atividade 6329)
+const DEVOLUCAO = `<p>Delivery has failed to these recipients or groups:</p>
+<p><a href="mailto:paulomovelatto@hotmail.com">paulomovelatto@hotmail.com</a></p>
+<p>Diagnostic information for administrators: Remote server returned '550 5.5.0 Requested action not taken: mailbox unavailable'</p>
+<p>Reporting-MTA: dns; a1-2.smtp-out.sa-east-1.amazonses.com</p>`;
 
 // silencia o log da aplicação durante os testes
 const logOriginal = console.log;
@@ -166,6 +181,35 @@ await t('SEGURANÇA: pessoa real com EMAIL vazio (nome comum) nunca é tratada c
     assert.strictEqual(ehLeadDeRemetenteAutomatico({ EMAIL: [], NAME: 'João Silva', TITLE: 'Móveis Silva , E-Mail' }), false);
     assert.strictEqual(ehLeadDeRemetenteAutomatico({ EMAIL: [], NAME: 'marcos@ferkoda.com', TITLE: '' }), false, 'endereço real no nome');
     assert.strictEqual(ehLeadDeRemetenteAutomatico({ EMAIL: [], NAME: '', TITLE: '' }), false, 'sem nada');
+});
+
+await t('devolução: extrai o destinatário que falhou, o motivo e o tipo', async () => {
+    const r = lerNotificacao({ DESCRIPTION: DEVOLUCAO, SUBJECT: 'Não é possível entregar: XIV Encontro Tecnológico', CREATED: '2026-09-22' });
+    assert.strictEqual(r.length, 1, `esperava 1 endereço, veio ${JSON.stringify(r)}`);
+    assert.strictEqual(r[0].email, 'paulomovelatto@hotmail.com');
+    assert.strictEqual(r[0].tipo, 'permanente');
+    assert.match(r[0].motivo, /550/);
+    assert.strictEqual(r[0].campanha, 'XIV Encontro Tecnológico');
+});
+
+await t('devolução: endereço é gravado no CSV ANTES de apagar o lead', async () => {
+    limparCsv();
+    config.excluirLeadDesconhecido = true;
+    lead(31553, { email: 'mailer-daemon@sa-east-1.amazonses.com' });
+    email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Não é possível entregar: XIV Encontro', lead: 31553, corpo: DEVOLUCAO });
+    await rodar(seq);
+    assert.deepStrictEqual(estado.excluidos, ['31553'], 'o lead-lixo sai');
+    assert.match(lerCsv(), /paulomovelatto@hotmail\.com;permanente;/, 'mas o endereço fica registrado');
+});
+
+await t('devolução: CSV é gravado mesmo com a exclusão DESLIGADA', async () => {
+    limparCsv();
+    config.excluirLeadDesconhecido = false;
+    lead(31553, { email: 'mailer-daemon@sa-east-1.amazonses.com' });
+    email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Undeliverable: X', lead: 31553, corpo: DEVOLUCAO });
+    await rodar(seq);
+    assert.deepStrictEqual(estado.excluidos, []);
+    assert.match(lerCsv(), /paulomovelatto@hotmail\.com/, 'capturar o endereço não pode depender de apagar');
 });
 
 await t('SEGURANÇA: devolução anexada a um CLIENTE REAL não apaga o cliente', async () => {

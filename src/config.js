@@ -105,6 +105,11 @@ const config = {
     // Para ligar: BITRIX_EXCLUIR_LEAD_DESCONHECIDO=true no .env.
     excluirLeadDesconhecido: process.env.BITRIX_EXCLUIR_LEAD_DESCONHECIDO === 'true',
 
+    // Cada devolução/reclamação que chega é registrada aqui ANTES de o lead-lixo
+    // ser apagado — é a lista que o marketing usa para limpar a base de envio.
+    arquivoDevolucoes: process.env.ARQUIVO_DEVOLUCOES
+        || fileURLToPath(new URL('../devolucoes.csv', import.meta.url)),
+
     // IDs dos campos customizados do Bitrix. ATENÇÃO: são específicos de cada
     // portal — ao trocar de portal precisam ser reconferidos com
     // `node tools/verificar.mjs`.
