@@ -50,8 +50,12 @@ const bitrix = http.createServer((req, res) => {
         } else if (metodo === 'crm.lead.delete') {
             estado.excluidos.push(String(p.ID));
             delete estado.leads[p.ID];
+        } else if (metodo === 'crm.timeline.comment.add') {
+            estado.posts.push({ lead: String(p.fields.ENTITY_ID), texto: p.fields.COMMENT, tipo: p.fields.ENTITY_TYPE });
         } else if (metodo === 'crm.livefeedmessage.add') {
-            estado.posts.push({ lead: String(p.FIELDS.ENTITYID), texto: p.FIELDS.MESSAGE });
+            // como no portal real: o método existe mas foi desativado
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ error: '', error_description: 'Livefeed is no longer supported' }));
         }
 
         res.setHeader('Content-Type', 'application/json');
@@ -302,6 +306,18 @@ await t('mesma pessoa, formulário DIFERENTE: não é duplicata, os dois ficam',
     email(++seq, { de: 'Hubspot Landing <mkt.sales@topsolid.com>', assunto: 'Demo request', lead: 801, corpo: FORMULARIO });
     await rodar(seq);
     assert.deepStrictEqual(estado.excluidos, []);
+});
+
+await t('REGRESSAO: resumo do formulário vai para a linha do tempo (livefeed foi desativado)', async () => {
+    config.excluirLeadDesconhecido = true;
+    lead(950, { email: 'no-reply@topsolid.com' });
+    email(++seq, { de: 'TopSolid <no-reply@topsolid.com>', assunto: 'Get a quote', lead: 950, corpo: FORMULARIO });
+    await rodar(seq);
+    const resumo = estado.posts.find((p) => p.lead === '950');
+    assert.ok(resumo, `o resumo tem que ser publicado; chamadas: ${estado.chamadas.join(', ')}`);
+    assert.strictEqual(resumo.tipo, 'lead');
+    assert.match(resumo.texto, /Informações Brutas/);
+    assert.ok(!estado.chamadas.includes('crm.livefeedmessage.add'), 'não pode usar o método desativado');
 });
 
 // ---------- assunto desconhecido ----------

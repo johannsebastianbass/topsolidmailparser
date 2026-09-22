@@ -127,15 +127,15 @@ export async function listarLeads(filter, select = ['ID', 'TITLE'], order = { ID
 }
 
 /**
- * Publica uma mensagem no mural (livefeed) de um lead. Não lança.
+ * Publica um comentário na linha do tempo do lead. Não lança.
+ *
+ * Usa crm.timeline.comment.add. O método antigo, crm.livefeedmessage.add,
+ * continua aparecendo na lista de métodos deste Bitrix mas responde "Livefeed
+ * is no longer supported" — e como a publicação não derruba o fluxo, os
+ * resumos "Informações Brutas" falharam em silêncio desde a instalação.
  */
-export function postarNoMural(leadId, mensagem, titulo = 'Mail Parser') {
-    return tentar('crm.livefeedmessage.add', {
-        FIELDS: {
-            POST_TITLE: titulo,
-            MESSAGE: mensagem,
-            ENTITYTYPEID: '1',
-            ENTITYID: leadId,
-        },
+export function postarNoMural(leadId, mensagem) {
+    return tentar('crm.timeline.comment.add', {
+        fields: { ENTITY_ID: leadId, ENTITY_TYPE: 'lead', COMMENT: mensagem },
     });
 }
