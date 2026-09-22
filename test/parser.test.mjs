@@ -3,6 +3,7 @@ import { extrairCampos, limparHtml } from '../src/htmlParser.js';
 import { acharLayout, idDoPais, idDaLista, MAPA_INDUSTRY_INTEREST, MAPA_FIELD_OF_APPLICATION } from '../src/layouts.js';
 import { ehRespostaDeEmail, remetenteAceito } from '../src/topSolid.js';
 import { normalizarDados, montarResumo, normalizarTelefone, montarMultifield, montarCamposDoLead } from '../src/lead.js';
+import { podeRepetir } from '../src/bitrix.js';
 
 let ok = 0, falhas = 0;
 function t(nome, fn) {
@@ -214,6 +215,19 @@ t('valor ja correto: nao reenvia o campo (idempotente)', () => {
     assert.strictEqual(montarMultifield('EMAIL', atuais, 'novo@cliente.com'), null);
 });
 
+t('REGRESSAO: e-mail do cliente ja presente NAO deixa o endereco do canal no cartao', () => {
+    // cartao com o endereco do canal + o do cliente: o do canal TEM que sair,
+    // senao o Bitrix anexa a ele todo formulario seguinte desse canal
+    const atuais = [
+        { ID: '1', TYPE_ID: 'EMAIL', VALUE: 'mkt.sales@topsolid.com' },
+        { ID: '2', TYPE_ID: 'EMAIL', VALUE: 'cliente@empresa.com.br' },
+    ];
+    const r = montarMultifield('EMAIL', atuais, 'cliente@empresa.com.br');
+    assert.ok(r, 'precisa mandar o campo');
+    assert.deepStrictEqual(r.filter((e) => e.VALUE === '').map((e) => e.ID), ['1', '2']);
+    assert.strictEqual(r[r.length - 1].VALUE, 'cliente@empresa.com.br');
+});
+
 t('sem valor novo: nao apaga o contato existente', () => {
     const atuais = [{ ID: '1', TYPE_ID: 'EMAIL', VALUE: 'algum@cliente.com' }];
     assert.strictEqual(montarMultifield('EMAIL', atuais, ''), null);
@@ -370,6 +384,31 @@ t('lista: variantes em francês que o site manda', () => {
 
 t('lista: "Tooling" continua sem correspondência (não existe opção no Bitrix)', () => {
     assert.strictEqual(idDaLista(MAPA_INDUSTRY_INTEREST, 'Tooling'), '');
+});
+
+// ---------- repetição de chamada ao Bitrix ----------
+
+const semResposta = (msg) => Object.assign(new Error(msg), { ehDeRede: true });
+const comResposta = (msg) => new Error(msg);
+
+t('retry: limite do portal é repetido, inclusive ao criar lead', () => {
+    assert.strictEqual(podeRepetir('crm.lead.add', comResposta('crm.lead.add: QUERY_LIMIT_EXCEEDED - ...')), true);
+    assert.strictEqual(podeRepetir('crm.lead.update', comResposta('OPERATION_TIME_LIMIT')), true);
+});
+
+t('retry: timeout ao CRIAR lead não é repetido (o lead pode ter sido criado)', () => {
+    assert.strictEqual(podeRepetir('crm.lead.add', semResposta('timeout of 15000ms exceeded ECONNABORTED')), false);
+    assert.strictEqual(podeRepetir('crm.contact.add', semResposta('socket hang up')), false);
+    assert.strictEqual(podeRepetir('crm.activity.binding.add', semResposta('ECONNRESET')), false);
+});
+
+t('retry: timeout em leitura ou atualização continua sendo repetido', () => {
+    assert.strictEqual(podeRepetir('crm.lead.get', semResposta('ECONNRESET')), true);
+    assert.strictEqual(podeRepetir('crm.lead.update', semResposta('ETIMEDOUT')), true);
+});
+
+t('retry: erro de negócio permanente nunca é repetido', () => {
+    assert.strictEqual(podeRepetir('crm.lead.get', comResposta('crm.lead.get: NOT_FOUND')), false);
 });
 
 console.log(`\n${ok} passaram, ${falhas} falharam`);

@@ -100,8 +100,8 @@ const config = {
     // foi removida: apagar o lead faz a sincronização da caixa reimportar o
     // e-mail e recriar o lead (ver src/topSolid.js).
 
-    // Cada devolução/reclamação que chega é registrada aqui ANTES de o lead-lixo
-    // ser apagado — é a lista que o marketing usa para limpar a base de envio.
+    // Cada devolução/reclamação que chega é registrada aqui — é a lista que o
+    // marketing usa para limpar a base de envio.
     arquivoDevolucoes: process.env.ARQUIVO_DEVOLUCOES
         || fileURLToPath(new URL('../devolucoes.csv', import.meta.url)),
 

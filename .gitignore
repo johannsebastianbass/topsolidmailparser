@@ -4,3 +4,8 @@ devolucoes.csv
 limpeza-backup-*.json
 log.txt
 node_modules
+
+# Código da versão antiga e cópias locais: contêm o webhook do portal antigo
+src/_OldtopSolid.js
+server2.js
+package(original).json

@@ -45,6 +45,20 @@ function ehTemporario(e) {
     return ERROS_TEMPORARIOS.test(texto);
 }
 
+// Métodos que CRIAM registro. Repetir um deles depois de um erro de REDE pode
+// duplicar: o Bitrix pode ter criado o lead e a resposta é que se perdeu no
+// caminho (timeout, conexão cortada). Erro de negócio (QUERY_LIMIT_EXCEEDED e
+// afins) chega como resposta completa, prova de que nada foi criado, e por isso
+// continua sendo repetido normalmente.
+const METODOS_QUE_CRIAM = /\.add$/i;
+
+/** Vale a pena (e é seguro) repetir esta chamada depois deste erro? */
+export function podeRepetir(metodo, e) {
+    if (!ehTemporario(e)) return false;
+    const semResposta = Boolean(e && e.ehDeRede);
+    return !(semResposta && METODOS_QUE_CRIAM.test(metodo));
+}
+
 /**
  * Chama um método do Bitrix. Lança em erro de rede ou erro de negócio.
  */
@@ -59,7 +73,11 @@ export async function chamar(metodo, params = {}) {
             return await enfileirar(() => requisitar(metodo, params));
         } catch (e) {
             ultimoErro = e;
-            if (!ehTemporario(e) || tentativa === MAX_TENTATIVAS) throw e;
+            if (ehTemporario(e) && !podeRepetir(metodo, e)) {
+                erro(`${metodo} falhou sem resposta do portal; NÃO será repetido para não duplicar registro`, e);
+                throw e;
+            }
+            if (!podeRepetir(metodo, e) || tentativa === MAX_TENTATIVAS) throw e;
             const pausa = BACKOFF_BASE_MS * Math.pow(2, tentativa);
             erro(`${metodo} falhou por limite/instabilidade; tentativa ${tentativa + 1} em ${pausa}ms`, e);
             await espera(pausa);
@@ -69,11 +87,18 @@ export async function chamar(metodo, params = {}) {
 }
 
 async function requisitar(metodo, params) {
-    const resposta = await axios.post(`${config.bitrix.webhook}/${metodo}`, params, {
-        httpsAgent: agent,
-        timeout: config.bitrix.timeoutMs,
-        headers: { 'Content-Type': 'application/json' },
-    });
+    let resposta;
+    try {
+        resposta = await axios.post(`${config.bitrix.webhook}/${metodo}`, params, {
+            httpsAgent: agent,
+            timeout: config.bitrix.timeoutMs,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    } catch (e) {
+        // Sem resposta do portal: não dá para saber se a operação foi executada.
+        if (!e || !e.response) e = Object.assign(e || new Error('falha de rede'), { ehDeRede: true });
+        throw e;
+    }
 
     const data = resposta.data;
     if (data && data.error) {

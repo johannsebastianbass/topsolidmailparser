@@ -64,10 +64,16 @@ export function montarMultifield(tipo, atuais, valorNovo) {
     // sem contato e faria o Bitrix criar outro lead na próxima mensagem.
     if (!valorNovo) return null;
 
+    // Só não mexemos se o campo JÁ for exatamente o valor novo. Antes bastava
+    // um dos valores coincidir para a função desistir — e num cartão com
+    // [mkt.sales@topsolid.com, cliente@empresa.com] o endereço do CANAL ficava
+    // lá. O Bitrix então anexaria a esse cartão todo formulário seguinte do
+    // canal: o mesmo mecanismo que empilhou 380 devoluções num lead só.
+    const existentes = (atuais || []).filter((i) => i && i.ID);
+    if (existentes.length === 1 && String(existentes[0].VALUE || '') === valorNovo) return null;
+
     const entradas = [];
-    for (const item of atuais || []) {
-        if (!item || !item.ID) continue;
-        if (String(item.VALUE || '') === valorNovo) return null;   // já está correto
+    for (const item of existentes) {
         entradas.push({
             ID: item.ID,
             TYPE_ID: item.TYPE_ID || tipo,
@@ -80,15 +86,15 @@ export function montarMultifield(tipo, atuais, valorNovo) {
     return entradas;
 }
 
+/** "Hubspot Landing <mkt.sales@topsolid.com>" -> "mkt.sales@topsolid.com" */
+function enderecoDe(valor) {
+    const m = texto(valor).match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/);
+    return m ? m[0] : texto(valor);
+}
+
 /**
  * Texto de "Informações Brutas" publicado no mural do lead.
  */
-/** "Hubspot Landing <mkt.sales@topsolid.com>" -> "mkt.sales@topsolid.com" */
-function enderecoDe(texto) {
-    const m = String(texto || '').match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/);
-    return m ? m[0] : String(texto || '');
-}
-
 export function montarResumo(layout, assunto, dados, dePara) {
     const linhas = layout.resumo
         .map((campo) => `[b]- ${rotuloDe(layout, campo)}:[/b] ${dados[campo] || ''}`)

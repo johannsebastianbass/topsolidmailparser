@@ -2,9 +2,9 @@
 // reclamação) e registro dos endereços que falharam.
 //
 // Usado em dois lugares, com a mesma regra:
-//  - src/topSolid.js grava cada devolução em CSV ANTES de apagar o lead-lixo.
-//    Sem isso, a exclusão automática apagaria do CRM a única cópia do endereço
-//    que falhou, e o marketing não teria como limpar a lista;
+//  - src/topSolid.js grava cada devolução em CSV assim que ela chega. É a lista
+//    que o marketing usa para limpar a base de envio, e não depende de ninguém
+//    ir atrás do cartão no CRM;
 //  - tools/devolucoes.mjs extrai o histórico que já está no CRM.
 
 import fs from 'fs';
@@ -69,7 +69,8 @@ const campo = (v) => String(v || '').replace(/[;\r\n]/g, ',');
 
 /**
  * Acrescenta os registros ao CSV (cria com cabeçalho na primeira vez).
- * Síncrono de propósito: tem que estar gravado ANTES de o lead ser apagado.
+ * Síncrono de propósito: o registro tem que estar em disco antes de qualquer
+ * outra coisa acontecer com o cartão.
  */
 export function gravarDevolucoes(arquivo, registros, idAtividade) {
     if (!arquivo || !registros.length) return;
