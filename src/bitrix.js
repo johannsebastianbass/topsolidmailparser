@@ -110,8 +110,20 @@ export function atualizarLead(id, fields) {
     return chamar('crm.lead.update', { ID: id, FIELDS: fields });
 }
 
-export function excluirLead(id) {
-    return chamar('crm.lead.delete', { ID: id });
+// Não existe função de exclusão de lead de propósito: neste Bitrix, apagar o
+// lead faz a sincronização da caixa reimportar o e-mail e recriar o lead.
+
+export async function criarLead(fields) {
+    const data = await chamar('crm.lead.add', { fields });
+    return data && data.result;
+}
+
+/**
+ * Vincula uma atividade (o e-mail) a mais um lead, sem tirá-la de onde está.
+ * Não lança: falhar aqui não pode impedir o lead de existir.
+ */
+export function vincularAtividade(atividadeId, leadId) {
+    return tentar('crm.activity.binding.add', { activityId: atividadeId, entityTypeId: 1, entityId: leadId });
 }
 
 /**

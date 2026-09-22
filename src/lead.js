@@ -81,36 +81,17 @@ export function montarMultifield(tipo, atuais, valorNovo) {
 }
 
 /**
- * Lê o lead uma única vez e monta EMAIL e PHONE já com as remoções embutidas.
- *
- * A versão anterior disparava a limpeza do e-mail em uma requisição paralela ao
- * update principal (sem await entre as duas): as duas corriam juntas e, na
- * ordem errada, apagavam o e-mail recém-gravado. Agora é uma requisição só.
- */
-async function montarContatos(leadId, dados) {
-    // Sem e-mail nem telefone não há o que substituir: evita uma chamada à API.
-    if (!dados.email && !dados.phone) return { EMAIL: null, PHONE: null };
-
-    let lead = null;
-    try {
-        lead = await bitrix.buscarLead(leadId);
-    } catch (e) {
-        erro(`leitura do lead ${leadId} para substituir e-mail/telefone`, e);
-    }
-
-    return {
-        EMAIL: montarMultifield('EMAIL', lead && lead.EMAIL, dados.email),
-        PHONE: montarMultifield('PHONE', lead && lead.PHONE, dados.phone),
-    };
-}
-
-/**
  * Texto de "Informações Brutas" publicado no mural do lead.
  */
-export function montarResumo(layout, assunto, dados) {
+export function montarResumo(layout, assunto, dados, dePara) {
     const linhas = layout.resumo
         .map((campo) => `[b]- ${rotuloDe(layout, campo)}:[/b] ${dados[campo] || ''}`)
         .join('\n');
+
+    // DE/PARA do e-mail original: por qual canal o formulário chegou.
+    const origem = dePara
+        ? [`[b]- Recebido de:[/b] ${dePara.de || ''}`, `[b]- Para:[/b] ${dePara.para || ''}`, '']
+        : [];
 
     return [
         '[b][Mail Parser][/b]',
@@ -118,6 +99,7 @@ export function montarResumo(layout, assunto, dados) {
         'Informações Brutas:',
         '',
         `[COLOR=#ff0000][Fonte] - ${fonteDe(layout, assunto)}[/COLOR]`,
+        ...origem,
         linhas,
         '',
         '[I]Integração[/I]',
@@ -288,8 +270,10 @@ export async function acharSubmissaoAnterior(leadId, email, assunto, agora = Dat
 
     let resultado;
     try {
+        const filtro = { EMAIL: email };
+        if (leadId) filtro['!ID'] = leadId;
         resultado = await bitrix.listarLeads(
-            { EMAIL: email, '!ID': leadId },
+            filtro,
             ['ID', 'TITLE', 'SOURCE_ID', 'SOURCE_DESCRIPTION', 'DATE_CREATE'],
             { ID: 'desc' }
         );
@@ -309,33 +293,100 @@ export function ehMesmaSubmissao(lead, assunto, agora = Date.now()) {
 }
 
 /**
- * Submissão repetida: em vez de preencher um segundo cartão, registra no mural
- * do cartão original que o formulário chegou de novo — com os dados, para que
- * nada se perca se a pessoa tiver corrigido alguma informação.
+ * Submissão repetida: registra no cartão original que o formulário chegou de
+ * novo — com os dados, para que nada se perca se a pessoa tiver corrigido
+ * alguma informação.
  */
-export function registrarSubmissaoRepetida(anteriorId, layout, assunto, brutos) {
+export function registrarSubmissaoRepetida(anteriorId, layout, assunto, brutos, dePara) {
     const dados = normalizarDados(brutos);
-    const texto = montarResumo(layout, assunto, dados)
+    const texto = montarResumo(layout, assunto, dados, dePara)
         .replace('Informações Brutas:', 'O mesmo formulário chegou novamente. Informações recebidas:');
     return bitrix.postarNoMural(anteriorId, texto);
 }
 
 /**
- * Atualiza o lead com os dados do formulário e publica o resumo no mural.
+ * Marca como duplicata o lead que o Bitrix criou para uma submissão repetida.
+ *
+ * NÃO apaga: apagar faz a sincronização reimportar o e-mail e criar outro lead.
+ * Em vez disso:
+ *  - tira os e-mails e telefones do cartão. Senão ele fica com o endereço do
+ *    canal (mkt.sales@, no-reply@) e o Bitrix passa a anexar NELE todos os
+ *    formulários seguintes desse canal — o mesmo mecanismo que empilhou 380
+ *    devoluções num lead só;
+ *  - muda o status para "Desqualificado" (JUNK), tirando-o do funil;
+ *  - comenta apontando o cartão que vale.
+ */
+export async function marcarComoDuplicata(leadId, anteriorId) {
+    const lead = await bitrix.buscarLead(leadId);
+    if (!lead) return;
+
+    const limpar = (itens, tipo) => (itens || []).filter((i) => i && i.ID)
+        .map((i) => ({ ID: i.ID, TYPE_ID: i.TYPE_ID || tipo, VALUE_TYPE: i.VALUE_TYPE || 'WORK', VALUE: '' }));
+
+    const fields = { STATUS_ID: 'JUNK' };
+    const emails = limpar(lead.EMAIL, 'EMAIL');
+    const fones = limpar(lead.PHONE, 'PHONE');
+    if (emails.length) fields.EMAIL = emails;
+    if (fones.length) fields.PHONE = fones;
+
+    await bitrix.atualizarLead(leadId, fields);
+
+    const dominio = config.bitrix.dominio;
+    await bitrix.postarNoMural(leadId,
+        '[b][Mail Parser][/b]\n\nEste cartão é uma DUPLICATA: o mesmo formulário chegou duas vezes.\n'
+        + `[b]Cartão que vale:[/b] [URL=${dominio}/crm/lead/details/${anteriorId}/]lead ${anteriorId}[/URL]\n\n`
+        + 'Marcado como Desqualificado em vez de excluído — excluir faria a sincronização recriá-lo.\n\n[I]Integração[/I]');
+    log(`lead ${leadId} marcado como duplicata do lead ${anteriorId}`);
+}
+
+// Tempo máximo entre o e-mail chegar e o lead nascer para considerar que foi a
+// SINCRONIZAÇÃO que criou o lead. Nos leads reais o atraso ficou entre 3 e 10
+// min. Lead criado bem depois do e-mail foi convertido à mão por alguém que
+// avaliou a mensagem — e esse nunca é sobrescrito.
+const JANELA_LEAD_AUTOMATICO_MS = 30 * 60 * 1000;
+
+/**
+ * O lead foi criado automaticamente pela sincronização da caixa, e ninguém
+ * mexeu nele ainda? Só nesse caso a integração sobrescreve os campos.
+ */
+export function ehLeadAutomaticoIntocado(lead, atividade) {
+    if (!lead || lead.SOURCE_ID !== 'EMAIL') return false;
+    const criado = Date.parse(lead.DATE_CREATE);
+    const chegou = Date.parse((atividade && (atividade.START_TIME || atividade.CREATED)) || '');
+    if (!Number.isFinite(criado) || !Number.isFinite(chegou)) return false;
+    return Math.abs(criado - chegou) <= JANELA_LEAD_AUTOMATICO_MS;
+}
+
+/**
+ * Preenche com os dados do formulário o lead que a sincronização criou.
  * Execuções para o mesmo lead são serializadas.
  */
-export function atualizarLeadComFormulario(leadId, assunto, layout, brutos) {
+export function atualizarLeadComFormulario(leadId, assunto, layout, brutos, atividade, dePara) {
     if (!leadId) {
         log('atividade sem lead associado (OWNER_ID vazio); nada a atualizar');
         return Promise.resolve();
     }
 
-    return comTrava(`lead:${leadId}`, () => executarAtualizacao(leadId, assunto, layout, brutos));
+    return comTrava(`lead:${leadId}`, () => executarAtualizacao(leadId, assunto, layout, brutos, atividade, dePara));
 }
 
-async function executarAtualizacao(leadId, assunto, layout, brutos) {
+async function executarAtualizacao(leadId, assunto, layout, brutos, atividade, dePara) {
     const dados = normalizarDados(brutos);
     log('dados extraídos', dados);
+
+    const lead = await bitrix.buscarLead(leadId);
+    if (!lead) {
+        log(`lead ${leadId} não existe mais; nada a atualizar`);
+        return;
+    }
+
+    // Lead criado à mão (ou já trabalhado): não sobrescreve nada. Só deixa os
+    // dados do formulário no comentário, para quem estiver cuidando dele.
+    if (!ehLeadAutomaticoIntocado(lead, atividade)) {
+        log(`lead ${leadId} foi criado à mão ou já trabalhado (origem '${lead.SOURCE_ID}'); campos preservados, dados só no comentário`);
+        await bitrix.postarNoMural(leadId, montarResumo(layout, assunto, dados, dePara));
+        return;
+    }
 
     if (!dados.email) {
         // Sem e-mail o Bitrix não consegue vincular as próximas mensagens a este
@@ -343,12 +394,44 @@ async function executarAtualizacao(leadId, assunto, layout, brutos) {
         log(`ATENÇÃO: não foi possível extrair o e-mail do lead ${leadId} (assunto: ${assunto})`);
     }
 
-    const contatos = await montarContatos(leadId, dados);
+    const contatos = {
+        EMAIL: montarMultifield('EMAIL', lead.EMAIL, dados.email),
+        PHONE: montarMultifield('PHONE', lead.PHONE, dados.phone),
+    };
     const fields = montarCamposDoLead(assunto, dados, contatos);
 
     await bitrix.atualizarLead(leadId, fields);
     log(`lead ${leadId} atualizado`);
 
-    await bitrix.postarNoMural(leadId, montarResumo(layout, assunto, dados));
+    await bitrix.postarNoMural(leadId, montarResumo(layout, assunto, dados, dePara));
     await avisarDuplicidade(leadId, dados);
+}
+
+/**
+ * Cria o lead quando o e-mail do formulário caiu num CONTATO de canal — o
+ * cenário em que a caixa não cria lead sozinha para quem escreve. O e-mail é
+ * vinculado ao lead novo, então o DE/PARA original aparece na linha do tempo.
+ */
+export async function criarLeadDoFormulario(atividade, assunto, layout, brutos, dePara) {
+    const dados = normalizarDados(brutos);
+    log('dados extraídos', dados);
+
+    if (!dados.email && !dados.phone) {
+        log(`formulário sem e-mail nem telefone (atividade ${atividade.ID}); lead não criado`);
+        return null;
+    }
+
+    const contatos = {
+        EMAIL: montarMultifield('EMAIL', [], dados.email),
+        PHONE: montarMultifield('PHONE', [], dados.phone),
+    };
+    const fields = montarCamposDoLead(assunto, dados, contatos);
+
+    const novoId = await bitrix.criarLead(fields);
+    log(`lead ${novoId} criado a partir da atividade ${atividade.ID}`);
+
+    await bitrix.vincularAtividade(atividade.ID, novoId);
+    await bitrix.postarNoMural(novoId, montarResumo(layout, assunto, dados, dePara));
+    await avisarDuplicidade(novoId, dados);
+    return novoId;
 }

@@ -31,7 +31,6 @@ código (`src/config.js`) e só precisa entrar no `.env` para sobrescrever:
 | `PORT` | `3000` | Porta do servidor |
 | `CAIXAS_MONITORADAS` | `marketing@topsolidbrazil.com` | Caixa(s) que recebem os formulários |
 | `REMETENTES_PERMITIDOS` | `no-reply@topsolid.com`, `mkt.sales@topsolid.com`, `marketing@cadsolid.pt` | Quem envia/encaminha os formulários |
-| `BITRIX_EXCLUIR_LEAD_DESCONHECIDO` | `false` | Com `true`, exclui o lead de e-mail cujo assunto não é de formulário conhecido |
 | `BITRIX_ASSIGNED_BY_ID` | `105` | Responsável atribuído ao lead (Fernando Pasquali) |
 | `BITRIX_PAIS_PADRAO` | `919` (Brasil) | País quando o formulário não traz o campo |
 | `BITRIX_INTERVALO_MS` | `550` | Intervalo mínimo entre chamadas (limite ~2 req/s na nuvem) |
@@ -135,35 +134,76 @@ Para testar sem depender de e-mail, crie qualquer atividade no CRM ("A fazer",
 "Ligação"). O log deve mostrar `atividade N não é e-mail (CRM_TODO/TODO);
 ignorada` — o que prova a cadeia inteira.
 
-## O que a integração exclui (e o que nunca exclui)
+## Regras de funcionamento
 
-A exclusão só acontece com `BITRIX_EXCLUIR_LEAD_DESCONHECIDO=true`. Desligada, o
-log registra `lead N SERIA excluído` — use isso para conferir antes de ligar.
+Definidas com o cliente em 22/09/2026:
 
-Mesmo ligada, **todo** caso passa pela mesma função com as mesmas travas: o lead
-tem que pertencer à atividade, ainda estar como o Bitrix o criou a partir do
-e-mail (`SOURCE_ID = EMAIL`) e atender à regra do caso. Lead que alguém já
-trabalhou, ou que a integração já preencheu, nunca é apagado.
-
-| Caso | O que acontece |
+| E-mail que chega na caixa | O que a integração faz |
 | --- | --- |
-| Formulário reconhecido | preenche o lead |
-| Mesma submissão chegando 2× (mesmo e-mail e assunto em até 30 min) | apaga o 2º cartão e avisa no mural do original |
-| Devolução / reclamação / supressão da SES | apaga o lead-lixo criado para o remetente automático |
-| Remetente de formulário com assunto desconhecido | apaga o lead cru |
-| **Pessoa real escrevendo para o marketing** | **mantém o lead intacto** |
-| Resposta (`RE:`) | mantém o lead intacto |
+| **Formulário** vindo de `no-reply@topsolid.com`, `mkt.sales@topsolid.com` ou `marketing@cadsolid.pt` | vira lead, preenchido, com o DE/PARA do e-mail no resumo |
+| Mesmo formulário chegando 2× (mesmo e-mail e assunto em até 30 min) | o 2º cartão fica **Desqualificado**, sem e-mail, com aviso apontando o original |
+| **Qualquer outro canal** (pessoa, flyer/QR code de feira, fornecedor, newsletter) | **nada** — fica na caixa para o marketing avaliar e converter à mão |
+| Canal de formulário, mas assunto que não é formulário | nada |
+| Resposta (`RE:`) | nada |
+| Devolução / reclamação da SES | só registra o endereço em `devolucoes.csv` |
+| Lead **criado à mão** ou já trabalhado | nunca é sobrescrito — os dados do formulário entram só como comentário |
 
-Os três primeiros casos de exclusão vieram de problemas reais em produção: o
-Hubspot às vezes manda a notificação de formulário duas vezes com 1 segundo de
-diferença, e uma campanha para uma lista ruim gera centenas de devoluções que
-viram atividades na caixa monitorada.
+> "O que não pode fazer é excluir ou converter todos os e-mails que chegam —
+> caso contrário, vira um caos." — Fernando, TopSolid
 
-**Leads-lixo de remetente automático:** o Bitrix às vezes grava o endereço no
-nome e no título e deixa o campo EMAIL vazio (acontece com as reclamações da
-SES). A regra considera isso — mas só aceita o nome/título se for de fato um
-endereço de e-mail automático, então um lead de pessoa real sem e-mail nunca é
-confundido.
+### A integração nunca exclui lead
+
+Não existe função de exclusão no código. Neste Bitrix, apagar o lead apaga o
+vínculo do e-mail com o CRM, e a sincronização da caixa **reimporta a mensagem
+e cria outro lead** cerca de 45 minutos depois (visto em 22/09: lead 31598
+apagado, recriado como 31609). Excluir vira um laço. Duplicatas e lixo são
+**desqualificados** (status `JUNK`), nunca apagados.
+
+### Lead automático x lead feito à mão
+
+A integração só sobrescreve o lead que a sincronização criou e que ninguém
+tocou: origem `EMAIL` e criado até 30 minutos depois de o e-mail chegar (o
+atraso normal da sincronização é de 3 a 10 min). Lead criado bem depois do
+e-mail foi convertido por alguém que avaliou a mensagem, e fica como está.
+
+### Por que o duplicado perde o e-mail
+
+O Bitrix anexa todo e-mail novo ao cadastro que já tem aquele endereço. Um
+cartão que ficasse com `mkt.sales@topsolid.com` passaria a receber **todos** os
+formulários seguintes desse canal — foi assim que 380 devoluções se empilharam
+num lead só. Por isso o duplicado é desqualificado **e** tem e-mail e telefone
+removidos.
+
+## Configuração recomendada da caixa no Bitrix
+
+Hoje a caixa `marketing@topsolidbrazil.com` cria lead automaticamente para
+**todo** e-mail recebido. A integração deixa intocados os que não são
+formulário, mas eles continuam virando lead — criados pelo Bitrix, não por ela.
+Para que só formulário vire lead, a configuração alvo é:
+
+1. **Criar um contato fixo para cada canal** de formulário, com o e-mail do
+   canal: `no-reply@topsolid.com`, `mkt.sales@topsolid.com`,
+   `marketing@cadsolid.pt`. Assim o formulário cai num remetente conhecido e o
+   Bitrix registra o e-mail como atividade desse contato.
+2. **Desligar a criação automática de lead** na caixa `marketing@`.
+
+Com isso:
+
+- formulário → cai no contato do canal → a integração **cria** o lead e vincula
+  o e-mail a ele (o DE/PARA aparece na linha do tempo);
+- qualquer outro e-mail → não vira nada, fica na caixa para o marketing.
+
+**Ordem obrigatória:** instalar esta versão **antes** de criar os contatos. A
+versão anterior não conferia o tipo do dono da atividade: um formulário caindo
+num contato faria ela atualizar um *lead* qualquer com o mesmo número de ID.
+
+A integração funciona nos dois modos — com a criação automática ligada (preenche
+o lead que o Bitrix criou) e desligada (cria o lead a partir do contato) —,
+então a troca pode ser feita sem parar nada.
+
+**Outras caixas:** se a caixa de algum usuário estiver criando lead sozinha
+(visto com o usuário 132: "Financeiro", "Estefani Silva"), é a opção de criação
+automática marcada por engano na sincronização dessa caixa.
 
 ## Depois de uma campanha de marketing
 
@@ -180,13 +220,13 @@ sudo journalctl -u topsolid-mailparser | grep DEVOLUÇÃO
 O CSV separa devolução **permanente** (5xx: endereço não existe, tirar da lista)
 de **temporária** (4xx: caixa cheia, manter).
 
-Para o histórico que já estava no CRM antes desta versão, ou para limpar
-leads-lixo pendentes manualmente:
+Para o histórico que já estava no CRM antes desta versão, ou para
+desqualificar leads-lixo pendentes:
 
 ```bash
 node tools/devolucoes.mjs 2026-09-01     # extrai do CRM, com tipo
 node tools/limpeza.mjs lixo              # leads-lixo de devolução (simulação)
-node tools/limpeza.mjs lixo --aplicar    # apaga, com backup
+node tools/limpeza.mjs lixo --aplicar    # marca como Desqualificado, com backup
 ```
 
 Continuar mandando para endereço que devolve derruba a reputação da conta na
@@ -207,7 +247,7 @@ envio é pausado.
 | `src/config.js` | Configuração central |
 | `test/parser.test.mjs` | Testes do parser com amostras dos e-mails reais |
 | `tools/verificar.mjs` | Confere webhook, escopos, usuário, campos e IDs de lista do portal |
-| `tools/limpeza.mjs` | Remove contatos repetidos e leads-lixo (simulação por padrão, com backup e reversão) |
+| `tools/limpeza.mjs` | Remove contatos repetidos e desqualifica leads-lixo (simulação por padrão, com backup e reversão) |
 | `tools/devolucoes.mjs` | Lista os endereços que devolveram numa campanha, para tirar da lista de envio |
 | `tools/diagnostico.mjs` | Inspeção somente-leitura do CRM (e-mails acumulados, leads duplicados) |
 

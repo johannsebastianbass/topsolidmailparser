@@ -96,14 +96,9 @@ const config = {
     // portal. Sem ele configurado o endpoint aceita qualquer requisição.
     tokenWebhookSaida: String(process.env.BITRIX_APPLICATION_TOKEN || '').trim(),
 
-    // Trava de segurança: com 'false', assunto não reconhecido apenas registra
-    // no log em vez de excluir o lead. Útil nos primeiros dias em um portal com
-    // base grande, para conferir no log o que SERIA apagado.
-    // Começa DESLIGADO de propósito: assunto não reconhecido só registra no log
-    // ("lead X SERIA excluído") em vez de excluir. Numa base de 30 mil leads é
-    // melhor conferir o log alguns dias antes de deixar a integração apagar.
-    // Para ligar: BITRIX_EXCLUIR_LEAD_DESCONHECIDO=true no .env.
-    excluirLeadDesconhecido: process.env.BITRIX_EXCLUIR_LEAD_DESCONHECIDO === 'true',
+    // A integração NÃO exclui leads. A antiga BITRIX_EXCLUIR_LEAD_DESCONHECIDO
+    // foi removida: apagar o lead faz a sincronização da caixa reimportar o
+    // e-mail e recriar o lead (ver src/topSolid.js).
 
     // Cada devolução/reclamação que chega é registrada aqui ANTES de o lead-lixo
     // ser apagado — é a lista que o marketing usa para limpar a base de envio.

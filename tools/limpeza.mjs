@@ -4,7 +4,7 @@
 //   node tools/limpeza.mjs repetidos --aplicar    -> executa e grava backup
 //   node tools/limpeza.mjs revisao                -> CSV do que exige decisão humana
 //   node tools/limpeza.mjs reverter <backup.json> --aplicar  -> desfaz a limpeza
-//   node tools/limpeza.mjs lixo                   -> leads-lixo de devolução/reclamação (simulação)
+//   node tools/limpeza.mjs lixo                   -> desqualifica leads-lixo de devolução (simulação)
 //
 // Opções: --paginas N (padrão 40, ou seja 2000 leads) | --backup <arquivo>
 //
@@ -233,10 +233,14 @@ async function comandoReverter() {
 }
 
 /**
- * Apaga os leads-lixo que o Bitrix criou para remetentes automáticos
- * (mailer-daemon, reclamação, supressão). Usa a MESMA regra do código de
- * produção (src/topSolid.js): origem EMAIL e todos os e-mails do lead são
- * endereços automáticos. Simulação por padrão; --aplicar grava backup antes.
+ * Marca como Desqualificado os leads-lixo que o Bitrix criou para remetentes
+ * automáticos (mailer-daemon, reclamação, supressão). Usa a MESMA regra do
+ * código de produção (src/topSolid.js). Simulação por padrão.
+ *
+ * NÃO exclui: neste Bitrix, apagar o lead faz a sincronização da caixa
+ * reimportar o e-mail e recriar o lead (visto em 22/09). E o lead-lixo mantém
+ * o endereço automático de propósito — assim as devoluções seguintes continuam
+ * caindo nele, num cartão só, em vez de gerar cartões novos.
  */
 async function comandoLixo() {
     const { ehLeadDeRemetenteAutomatico } = await import('../src/topSolid.js');
@@ -259,33 +263,33 @@ async function comandoLixo() {
     }
     process.stdout.write('\r                                                  \r');
 
-    console.log(`\n${candidatos.length} leads-lixo de remetente automático\n`);
-    for (const l of candidatos) {
+    const pendentes = candidatos.filter((l) => l.STATUS_ID !== 'JUNK');
+    console.log(`\n${candidatos.length} leads-lixo de remetente automático (${candidatos.length - pendentes.length} já desqualificados)\n`);
+    for (const l of pendentes) {
         const n = (await chamar('crm.activity.list', { FILTER: { OWNER_TYPE_ID: 1, OWNER_ID: l.ID }, SELECT: ['ID'] })).total;
         l._atividades = n;
         const quem = (l.EMAIL || []).map((e) => e.VALUE).join(', ') || `(sem e-mail) ${l.NAME || l.TITLE}`;
         console.log(`   lead ${String(l.ID).padEnd(7)} ${l.DATE_CREATE.slice(0, 10)}  ${String(n).padStart(4)} atividades  ${quem}`);
     }
-    if (!candidatos.length) return;
+    if (!pendentes.length) return;
 
     if (!aplicar) {
-        console.log('\nSIMULACAO - nada foi alterado. Para executar de verdade: --aplicar');
-        console.log('Antes de aplicar, rode tools/devolucoes.mjs: apagar o lead apaga as devoluções anexadas a ele.');
+        console.log('\nSIMULACAO - nada foi alterado. Para marcar como Desqualificado: --aplicar');
         return;
     }
 
-    fs.writeFileSync(arquivoBackup, JSON.stringify(candidatos, null, 2), 'utf8');
-    console.log(`\nbackup dos leads: ${arquivoBackup}`);
+    fs.writeFileSync(arquivoBackup, JSON.stringify(pendentes.map((l) => ({ ID: l.ID, STATUS_ID: l.STATUS_ID })), null, 2), 'utf8');
+    console.log(`\nbackup do status anterior: ${arquivoBackup}`);
     let feitos = 0;
-    for (const l of candidatos) {
+    for (const l of pendentes) {
         try {
-            await chamar('crm.lead.delete', { ID: l.ID });
+            await chamar('crm.lead.update', { ID: l.ID, FIELDS: { STATUS_ID: 'JUNK' } });
             feitos++;
         } catch (e) {
             console.log(`   lead ${l.ID} falhou: ${(e && e.message) || e}`);
         }
     }
-    console.log(`${feitos}/${candidatos.length} leads-lixo excluídos.`);
+    console.log(`${feitos}/${pendentes.length} leads-lixo marcados como Desqualificado.`);
 }
 
 const acoes = { repetidos: comandoRepetidos, revisao: comandoRevisao, reverter: comandoReverter, lixo: comandoLixo };
