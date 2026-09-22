@@ -210,6 +210,9 @@ await t('DE/PARA: o resumo registra por qual canal e para qual caixa o formulár
     assert.match(resumo.texto, /Recebido de:\[\/b\] Hubspot Landing <mkt\.sales@topsolid\.com>/);
     assert.match(resumo.texto, /Para:\[\/b\] marketing@topsolidbrazil\.com/);
     assert.strictEqual(resumo.tipo, 'lead', 'publicado na linha do tempo, não no livefeed desativado');
+    // o Reply-To do Hubspot é o canal: o resumo avisa para responder pelo cartão
+    assert.match(resumo.texto, /use "E-mail" neste cartão \(vai para vinicius@ds\.ind\.br\)/);
+    assert.match(resumo.texto, /vai para mkt\.sales@topsolid\.com, não para o cliente/);
 });
 
 await t('QUOTE: mesma pessoa pedindo orçamento de novo DIAS depois é conversão nova', async () => {
@@ -340,13 +343,53 @@ await t('devolução: extrai destinatário, motivo e tipo', async () => {
     assert.strictEqual(r[0].campanha, 'XIV Encontro Tecnológico');
 });
 
-await t('devolução: endereço vai para o CSV e nenhum lead é alterado', async () => {
+await t('devolução: endereço vai para o CSV e o cartão do mailer-daemon sai do funil', async () => {
     limparCsv();
     lead(31553, { email: 'mailer-daemon@sa-east-1.amazonses.com' });
     email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Não é possível entregar: XIV Encontro', dono: 31553, corpo: DEVOLUCAO });
     await rodar(seq);
     assert.match(lerCsv(), /paulomovelatto@hotmail\.com;permanente;/);
-    assert.ok(estado.leads[31553], 'o lead continua existindo');
+    const l = estado.leads[31553];
+    assert.ok(l, 'o lead continua existindo');
+    assert.strictEqual(l.STATUS_ID, 'JUNK');
+    // o endereço fica: as próximas devoluções caem neste cartão, não em um novo
+    assert.deepStrictEqual(l.EMAIL.map((e) => e.VALUE), ['mailer-daemon@sa-east-1.amazonses.com']);
+    assert.ok(estado.posts.some((p) => p.lead === '31553' && /Desqualificado/.test(p.texto)));
+});
+
+await t('devolução: reclamação com o endereço só no título também sai do funil', async () => {
+    lead(31613, { titulo: 'complaints@sa-east-1.email-abuse.amazonses.com' });
+    email(++seq, { de: 'complaints@sa-east-1.email-abuse.amazonses.com', assunto: 'Complaint', dono: 31613 });
+    await rodar(seq);
+    assert.strictEqual(estado.leads[31613].STATUS_ID, 'JUNK');
+});
+
+await t('devolução: dezenas chegando juntas mexem no cartão uma vez só', async () => {
+    lead(31612, { email: 'mailer-daemon@sa-east-1.amazonses.com' });
+    const ids = [];
+    for (let i = 0; i < 10; i++) {
+        email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Não é possível entregar', dono: 31612, corpo: DEVOLUCAO });
+        ids.push(seq);
+    }
+    await Promise.all(ids.map(rodar));
+    assert.strictEqual(estado.leads[31612].STATUS_ID, 'JUNK');
+    assert.strictEqual(estado.chamadas.filter((c) => c === 'crm.lead.update').length, 1);
+    assert.strictEqual(estado.posts.filter((p) => p.lead === '31612').length, 1);
+});
+
+await t('devolução: lead de PESSOA ou já trabalhado nunca é desqualificado', async () => {
+    lead(1700, { email: 'cliente@empresa.com.br' });
+    email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Não é possível entregar', dono: 1700, corpo: DEVOLUCAO });
+    await rodar(seq);
+    lead(1701, { email: 'mailer-daemon@sa-east-1.amazonses.com', status: 'IN_PROCESS' });
+    email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Não é possível entregar', dono: 1701, corpo: DEVOLUCAO });
+    await rodar(seq);
+    lead(1702, { email: 'mailer-daemon@sa-east-1.amazonses.com', origem: 'WEBFORM' });
+    email(++seq, { de: 'MAILER-DAEMON@sa-east-1.amazonses.com', assunto: 'Não é possível entregar', dono: 1702, corpo: DEVOLUCAO });
+    await rodar(seq);
+    assert.strictEqual(estado.leads[1700].STATUS_ID, 'NEW');
+    assert.strictEqual(estado.leads[1701].STATUS_ID, 'IN_PROCESS');
+    assert.strictEqual(estado.leads[1702].STATUS_ID, 'NEW');
     assert.ok(!estado.chamadas.includes('crm.lead.update'));
 });
 

@@ -145,7 +145,7 @@ Definidas com o cliente em 22/09/2026:
 | **Qualquer outro canal** (pessoa, flyer/QR code de feira, fornecedor, newsletter) | **nada** — fica na caixa para o marketing avaliar e converter à mão |
 | Canal de formulário, mas assunto que não é formulário | nada |
 | Resposta (`RE:`) | nada |
-| Devolução / reclamação da SES | só registra o endereço em `devolucoes.csv` |
+| Devolução / reclamação da SES | registra o endereço em `devolucoes.csv` e desqualifica o cartão que a caixa criou para o `mailer-daemon@`/`complaints@` (mantendo o endereço — ver abaixo) |
 | Lead **criado à mão** ou já trabalhado | nunca é sobrescrito — os dados do formulário entram só como comentário |
 
 > "O que não pode fazer é excluir ou converter todos os e-mails que chegam —
@@ -173,6 +173,21 @@ cartão que ficasse com `mkt.sales@topsolid.com` passaria a receber **todos** os
 formulários seguintes desse canal — foi assim que 380 devoluções se empilharam
 num lead só. Por isso o duplicado é desqualificado **e** tem e-mail e telefone
 removidos.
+
+Com o cartão de devolução é o contrário: ele é desqualificado e **mantém** o
+endereço `mailer-daemon@...`, para funcionar como ralo. Em 22/09, 176
+devoluções caíram em 12 cartões, 131 delas num só (31605, já desqualificado).
+A integração só desqualifica cartão da sincronização (origem `EMAIL`), ainda em
+"Novo", cujo próprio e-mail é automático. Lead de pessoa nunca entra nisso.
+
+### Como responder ao cliente com histórico
+
+O formulário chega do Hubspot com Reply-To `mkt.sales@topsolid.com`: o botão
+"Responder" **no e-mail do formulário** escreve para o Hubspot, não para o
+cliente. O cartão já tem o e-mail do cliente, então responda pelo botão
+**"E-mail" do cartão**. A resposta do cliente volta para o mesmo cartão, porque
+o Bitrix anexa o e-mail ao cadastro que tem aquele endereço. O resumo do Mail
+Parser em cada lead traz esse aviso.
 
 ## Configuração recomendada da caixa no Bitrix
 

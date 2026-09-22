@@ -14,7 +14,7 @@
 //    como 31609). Excluir vira um laço.
 
 import config from './config.js';
-import { buscarAtividade } from './bitrix.js';
+import { buscarAtividade, buscarLead, atualizarLead, postarNoMural } from './bitrix.js';
 import { acharLayout } from './layouts.js';
 import { extrairCampos } from './htmlParser.js';
 import {
@@ -69,6 +69,39 @@ export function ehLeadDeRemetenteAutomatico(lead) {
         enderecos = `${lead.NAME || ''} ${lead.TITLE || ''}`.match(REGEX_ENDERECO) || [];
     }
     return enderecos.length > 0 && enderecos.every(ehRemetenteAutomatico);
+}
+
+/**
+ * Desqualifica o cartão que a caixa criou para um remetente automático
+ * ("mailer-daemon@...", "complaints@..."). Sem isso cada variação de endereço
+ * vira um cartão NOVO no funil (22/09: 31612 e 31613 nasceram depois da limpeza).
+ *
+ * NÃO apaga e NÃO tira o endereço do cartão, de propósito: o Bitrix anexa as
+ * devoluções seguintes ao cadastro que tem aquele endereço, então o cartão
+ * desqualificado vira um ralo (31605 recebeu 131 devoluções num cartão só).
+ *
+ * Só age em lead da sincronização (origem EMAIL), ainda em "Novo", cujo próprio
+ * e-mail é automático — nunca no lead de uma pessoa que recebeu uma devolução.
+ */
+export function desqualificarLeadDeRemetenteAutomatico(atividade) {
+    if (Number(atividade.OWNER_TYPE_ID) !== TIPO_ENTIDADE_LEAD || !atividade.OWNER_ID) return Promise.resolve();
+    const leadId = atividade.OWNER_ID;
+
+    // As devoluções de uma campanha chegam às dezenas ao mesmo tempo: a trava
+    // faz só a primeira mexer no cartão; as outras já o encontram desqualificado.
+    return comTrava(`lead:${leadId}`, async () => {
+        const lead = await buscarLead(leadId);
+        if (!lead || lead.SOURCE_ID !== 'EMAIL' || lead.STATUS_ID !== 'NEW') return;
+        if (!ehLeadDeRemetenteAutomatico(lead)) return;
+
+        await atualizarLead(leadId, { STATUS_ID: 'JUNK' });
+        await postarNoMural(leadId,
+            '[b][Mail Parser][/b]\n\nCartão criado pela caixa para um remetente automático '
+            + '(devolução ou reclamação de campanha). Marcado como Desqualificado.\n'
+            + 'O endereço foi mantido de propósito: as próximas devoluções caem aqui, '
+            + 'em vez de gerar cartões novos. Os endereços que falharam ficam em devolucoes.csv.\n\n[I]Integração[/I]');
+        log(`lead ${leadId} de remetente automático marcado como Desqualificado`);
+    });
 }
 
 export function remetenteAceito(remetente) {
@@ -180,12 +213,14 @@ async function processarAtividade(idActivity) {
         return;
     }
 
-    // Devolução, supressão, reclamação: só registra o endereço que falhou, para
-    // o marketing limpar a lista. Não mexe em lead nenhum.
+    // Devolução, supressão, reclamação: registra o endereço que falhou, para o
+    // marketing limpar a lista, e tira do funil o cartão que a caixa criou para
+    // o remetente automático.
     if (ehRemetenteAutomatico(remetente)) {
         const registros = lerNotificacao(atividade);
         gravarDevolucoes(config.arquivoDevolucoes, registros, atividade.ID);
         for (const r of registros) log(`DEVOLUÇÃO ${r.tipo}: ${r.email} — ${r.motivo}`);
+        await desqualificarLeadDeRemetenteAutomatico(atividade);
         return;
     }
 

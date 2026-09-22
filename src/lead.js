@@ -83,6 +83,12 @@ export function montarMultifield(tipo, atuais, valorNovo) {
 /**
  * Texto de "Informações Brutas" publicado no mural do lead.
  */
+/** "Hubspot Landing <mkt.sales@topsolid.com>" -> "mkt.sales@topsolid.com" */
+function enderecoDe(texto) {
+    const m = String(texto || '').match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/);
+    return m ? m[0] : String(texto || '');
+}
+
 export function montarResumo(layout, assunto, dados, dePara) {
     const linhas = layout.resumo
         .map((campo) => `[b]- ${rotuloDe(layout, campo)}:[/b] ${dados[campo] || ''}`)
@@ -93,6 +99,15 @@ export function montarResumo(layout, assunto, dados, dePara) {
         ? [`[b]- Recebido de:[/b] ${dePara.de || ''}`, `[b]- Para:[/b] ${dePara.para || ''}`, '']
         : [];
 
+    // O formulário chega do Hubspot com Reply-To mkt.sales@topsolid.com (ou de
+    // no-reply@): "Responder" no e-mail do formulário escreve para o canal, não
+    // para o cliente. O e-mail do cliente está no cartão, e a resposta dele volta
+    // para este mesmo cartão — é assim que o histórico fica junto.
+    const comoResponder = dePara && dados.email
+        ? ['', `[b]Para responder ao cliente:[/b] use "E-mail" neste cartão (vai para ${dados.email}). `
+            + `O "Responder" do e-mail do formulário vai para ${enderecoDe(dePara.de)}, não para o cliente.`]
+        : [];
+
     return [
         '[b][Mail Parser][/b]',
         '',
@@ -101,6 +116,7 @@ export function montarResumo(layout, assunto, dados, dePara) {
         `[COLOR=#ff0000][Fonte] - ${fonteDe(layout, assunto)}[/COLOR]`,
         ...origem,
         linhas,
+        ...comoResponder,
         '',
         '[I]Integração[/I]',
     ].join('\n');
