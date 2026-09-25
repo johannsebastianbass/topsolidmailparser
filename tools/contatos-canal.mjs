@@ -68,6 +68,12 @@ for (const canal of criar) {
             NAME: `Canal de formulário ${canal}`,
             EMAIL: [{ VALUE: canal, VALUE_TYPE: 'WORK' }],
             ASSIGNED_BY_ID: RESPONSAVEL,
+            // Registro técnico, não é gente: tipo em branco e origem "Outros"
+            // para não entrar como cliente numa contagem por tipo. Neste portal
+            // os rótulos de tipo foram renomeados (OTHER = "Parceiro",
+            // SUPPLIER = "Educacional"), então nenhum deles serviria.
+            TYPE_ID: '',
+            SOURCE_ID: 'OTHER',
             COMMENTS: 'Contato técnico do Mail Parser: recebe os e-mails de formulário deste canal, '
                 + 'e a integração cria o lead a partir deles. Não excluir, não mesclar, não converter.',
         },
